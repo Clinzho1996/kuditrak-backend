@@ -239,33 +239,43 @@ export const getTransactionHistory = async (req, res) => {
 };
 
 export const pullMonoTransactions = async (req, res) => {
-	const { accountId } = req.params;
+	try {
+		const { accountId } = req.params;
 
-	const connection = await BankConnection.findOne({
-		monoAccountId: accountId,
-	});
+		const connection = await BankConnection.findOne({
+			monoAccountId: accountId,
+		});
+		if (!connection) {
+			return res
+				.status(404)
+				.json({ success: false, error: "Bank account not found" });
+		}
 
-	const response = await mono.get(`/accounts/${accountId}/transactions`);
+		const response = await mono.get(`/accounts/${accountId}/transactions`);
+		const transactions = response.data.data;
 
-	const transactions = response.data.data;
+		for (const tx of transactions) {
+			await Transaction.updateOne(
+				{ transactionId: tx._id },
+				{
+					userId: connection.userId,
+					bankConnectionId: connection._id,
+					amount: tx.amount,
+					description: tx.narration,
+					type: tx.type === "debit" ? "expense" : "income",
+					date: tx.date,
+					source: "bank",
+				},
+				{ upsert: true },
+			);
+		}
 
-	for (const tx of transactions) {
-		await Transaction.updateOne(
-			{ transactionId: tx._id },
-			{
-				userId: connection.userId,
-				bankConnectionId: connection._id,
-				amount: tx.amount,
-				description: tx.narration,
-				type: tx.type === "debit" ? "expense" : "income",
-				date: tx.date,
-				source: "bank",
-			},
-			{ upsert: true },
+		res.json({ success: true, count: transactions.length });
+	} catch (err) {
+		console.error(
+			"Error pulling Mono transactions:",
+			err.response?.data || err.message,
 		);
+		res.status(500).json({ success: false, error: err.message });
 	}
-
-	res.json({
-		success: true,
-	});
 };

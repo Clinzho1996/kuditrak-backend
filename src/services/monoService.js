@@ -1,5 +1,8 @@
 import axios from "axios";
+import dotenv from "dotenv";
 import Transaction from "../models/Transaction.js";
+
+dotenv.config();
 
 const mono = axios.create({
 	baseURL: process.env.MONO_BASE_URL,
@@ -9,6 +12,10 @@ const mono = axios.create({
 	},
 });
 
+console.log(
+	"Mono service initialized with base URL:",
+	process.env.MONO_BASE_URL,
+);
 export default mono;
 
 export const pullTransactionsFromMono = async (conn, since) => {

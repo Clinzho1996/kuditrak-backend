@@ -2,8 +2,7 @@ import Budget from "../models/Budget.js";
 import Transaction from "../models/Transaction.js";
 import { sendPush } from "./pushService.js";
 
-export const calculateUserInsights = async (userId) => {
-	// Fetch all transactions for this user
+export const calculateUserInsights = async (userId, sendAlerts = false) => {
 	const transactions = await Transaction.find({ userId });
 
 	const totalIncome = transactions
@@ -14,24 +13,14 @@ export const calculateUserInsights = async (userId) => {
 		.filter((t) => t.type === "expense")
 		.reduce((acc, t) => acc + t.amount, 0);
 
-	// Spending by category
-	const spendingByCategory = {};
-	transactions
-		.filter((t) => t.type === "expense")
-		.forEach((t) => {
-			const cat = t.categoryName || "Uncategorized";
-			spendingByCategory[cat] = (spendingByCategory[cat] || 0) + t.amount;
-		});
-
-	// Calculate budgets dynamically
+	// Budgets
 	const budgets = await Budget.find({ userId });
 	const budgetUsage = budgets.map((b) => {
 		const spent = transactions
 			.filter(
 				(t) =>
 					t.type === "expense" &&
-					t.categoryName &&
-					t.categoryName.toLowerCase() === b.name.toLowerCase(),
+					t.categoryName?.toLowerCase() === b.name.toLowerCase(),
 			)
 			.reduce((acc, t) => acc + t.amount, 0);
 
@@ -45,12 +34,22 @@ export const calculateUserInsights = async (userId) => {
 		};
 	});
 
+	if (sendAlerts) {
+		for (const b of budgetUsage) {
+			if (b.percentageUsed >= 90) {
+				await sendPush(
+					(await User.findById(userId)).pushToken,
+					`⚠️ Budget Alert: You have used ${b.percentageUsed.toFixed(0)}% of your ${b.budgetName} budget!`,
+				);
+			}
+		}
+	}
+
 	return {
 		totalIncome,
 		totalExpenses,
 		netBalance: totalIncome - totalExpenses,
-		spendingByCategory,
-		budgetUsage,
+		budgets: budgetUsage,
 	};
 };
 

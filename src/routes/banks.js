@@ -2,6 +2,7 @@ import express from "express";
 
 import {
 	getUserBankAccounts,
+	initiateBankLink,
 	linkBankAccount,
 	saveMonoCustomerId,
 	unlinkBankAccount,
@@ -11,8 +12,9 @@ import protect from "../middleware/auth.js";
 
 const router = express.Router();
 
-router.post("/mono-customer", protect, saveMonoCustomerId);
+router.post("/customer-id", protect, saveMonoCustomerId);
 router.post("/link", protect, linkBankAccount);
+router.post("/initiate", protect, initiateBankLink);
 
 router.get("/", protect, getUserBankAccounts);
 
