@@ -17,7 +17,11 @@ const transactionSchema = new mongoose.Schema({
 	description: String,
 	categoryId: { type: mongoose.Schema.Types.ObjectId, ref: "Category" },
 	categoryName: String,
-	source: { type: String, enum: ["bank", "manual"], default: "manual" },
+	source: {
+		type: String,
+		enum: ["bank", "manual", "wallet"],
+		default: "manual",
+	},
 	budgetId: {
 		type: mongoose.Schema.Types.ObjectId,
 		ref: "Budget",

@@ -22,30 +22,51 @@ export const createTransaction = async (req, res) => {
 	try {
 		const { amount, type, description, categoryId, date } = req.body;
 
+		if (!amount || !type) {
+			return res.status(400).json({ error: "Amount and type are required" });
+		}
+
+		if (!["income", "expense"].includes(type)) {
+			return res.status(400).json({ error: "Invalid transaction type" });
+		}
+
+		console.log("Creating transaction for user:", req.user._id);
+
+		if (!req.user || !req.user._id) {
+			return res.status(401).json({ error: "Unauthorized: user missing" });
+		}
+
 		let categoryName = null;
 		if (categoryId) {
 			const category = await Category.findOne({
 				_id: categoryId,
 				userId: req.user._id,
 			});
-			if (!category)
+
+			if (!category) {
 				return res.status(400).json({ error: "Invalid category selected" });
+			}
+
 			categoryName = category.name;
 		}
 
+		const transactionId = `TRX-${req.user._id}-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+
 		const transaction = await Transaction.create({
 			userId: req.user._id,
-			amount,
+			amount: Number(amount),
 			type,
-			description,
-			categoryId,
+			description: description || "",
+			categoryId: categoryId || null,
 			categoryName,
-			source: "manual",
-			date: date || new Date(),
+			source: "manual", // matches enum
+			date: date ? new Date(date) : new Date(),
+			transactionId,
 		});
 
 		res.status(201).json({ success: true, transaction });
 	} catch (err) {
+		console.error("CreateTransaction error:", err);
 		res.status(500).json({ error: err.message });
 	}
 };

@@ -81,7 +81,7 @@ export const generateFinancialInsights = async (userId) => {
 		const spent = transactions
 			.filter(
 				(t) =>
-					t.category === budget.name &&
+					t.budgetId?.toString() === budget._id.toString() &&
 					t.type === "expense" &&
 					t.createdAt >= startOfThisMonth,
 			)

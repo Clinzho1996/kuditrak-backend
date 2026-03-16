@@ -17,7 +17,7 @@ const router = express.Router();
 router.use(protect);
 
 router.get("/", listTransactions);
-router.post("/", createTransaction);
+router.post("/create", createTransaction);
 
 router.get("/history", getTransactionHistory);
 
