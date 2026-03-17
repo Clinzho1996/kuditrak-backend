@@ -3,9 +3,12 @@ import express from "express";
 import {
 	completeOnboarding,
 	confirmOtp,
+	forgotPassword,
 	login,
+	resetPassword,
 	signup,
 	socialAuth,
+	verifyResetOtp,
 } from "../controllers/authController.js";
 import protect from "../middleware/auth.js";
 
@@ -25,6 +28,9 @@ router.post("/confirm-otp", confirmOtp);
 // Login
 router.post("/login", login);
 router.post("/social-auth", socialAuth);
+router.post("/forgot-password", forgotPassword);
+router.post("/verify-otp", verifyResetOtp);
+router.post("/reset-password", resetPassword);
 
 // Step 3: Complete onboarding journey (after verification)
 router.post("/onboarding", protect, completeOnboarding);
