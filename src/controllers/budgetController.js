@@ -1,5 +1,6 @@
 import Budget from "../models/Budget.js";
 import Transaction from "../models/Transaction.js";
+import { checkLimits } from "../services/subscriptionService.js";
 
 /*
 |--------------------------------------------------------------------------
@@ -10,6 +11,7 @@ export const createBudget = async (req, res) => {
 	try {
 		const { name, amount, frequency, startDate, endDate } = req.body;
 
+		await checkLimits(req.user._id, "budget");
 		const budget = await Budget.create({
 			userId: req.user._id,
 			name,

@@ -10,13 +10,12 @@ import {
 import protect from "../middleware/auth.js";
 
 const router = express.Router();
-router.use(protect);
 
-router.post("/topup", topUpWallet);
+router.post("/topup", protect, topUpWallet);
 router.get("/verify", verifyWalletTopUp);
-router.post("/transfer", transferFunds);
-router.post("/allocate", allocateSavings);
-router.get("/balance", getBalance);
-router.post("/withdraw", withdrawToBank);
+router.post("/transfer", protect, transferFunds);
+router.post("/allocate", protect, allocateSavings);
+router.get("/balance", protect, getBalance);
+router.post("/withdraw", protect, withdrawToBank);
 
 export default router;

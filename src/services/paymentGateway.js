@@ -87,3 +87,118 @@ export const initiatePayout = async ({
 		};
 	}
 };
+
+// ===============================
+// PLAN CONFIG
+// ===============================
+const PLANS = {
+	basic: {
+		amount: 3000,
+		name: "Basic Plan",
+	},
+	pro: {
+		amount: 5000,
+		name: "Pro Plan",
+	},
+};
+
+// ===============================
+// INITIATE SUBSCRIPTION PAYMENT
+// ===============================
+export const initializeSubscriptionPayment = async ({
+	email,
+	plan,
+	userId,
+}) => {
+	try {
+		if (!PLANS[plan]) {
+			throw new Error("Invalid subscription plan");
+		}
+
+		const selectedPlan = PLANS[plan];
+
+		const reference = `sub_${plan}_${userId}_${Date.now()}`;
+
+		const response = await axios.post(
+			"https://api.paystack.co/transaction/initialize",
+			{
+				email,
+				amount: selectedPlan.amount * 100, // convert to kobo
+				reference,
+				callback_url: "https://kuditrak.ng/subscription/verify",
+				metadata: {
+					type: "subscription",
+					plan,
+					userId,
+				},
+			},
+			{
+				headers: {
+					Authorization: `Bearer ${PAYSTACK_SECRET}`,
+					"Content-Type": "application/json",
+				},
+			},
+		);
+
+		return {
+			paymentLink: response.data.data.authorization_url,
+			reference,
+			plan,
+			amount: selectedPlan.amount,
+		};
+	} catch (error) {
+		console.error(
+			"Initialize Subscription Error:",
+			error.response?.data || error.message,
+		);
+		throw new Error("Failed to initialize subscription payment");
+	}
+};
+
+// ===============================
+// VERIFY SUBSCRIPTION PAYMENT
+// ===============================
+export const verifySubscriptionPayment = async (reference) => {
+	try {
+		const response = await axios.get(
+			`https://api.paystack.co/transaction/verify/${reference}`,
+			{
+				headers: {
+					Authorization: `Bearer ${PAYSTACK_SECRET}`,
+				},
+			},
+		);
+
+		const data = response.data.data;
+
+		if (data.status !== "success") {
+			return {
+				success: false,
+				message: "Payment not successful",
+			};
+		}
+
+		const metadata = data.metadata || {};
+		const plan = metadata.plan;
+		const userId = metadata.userId;
+
+		if (!PLANS[plan]) {
+			throw new Error("Invalid plan in metadata");
+		}
+
+		return {
+			success: true,
+			plan,
+			userId,
+			amount: data.amount / 100, // convert back from kobo
+			reference: data.reference,
+			paidAt: data.paid_at,
+		};
+	} catch (error) {
+		console.error(
+			"Verify Subscription Error:",
+			error.response?.data || error.message,
+		);
+		throw new Error("Subscription verification failed");
+	}
+};

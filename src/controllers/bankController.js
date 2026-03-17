@@ -1,10 +1,14 @@
 import BankConnection from "../models/BankConnection.js";
+import User from "../models/User.js";
 
 import mono from "../services/monoService.js";
+import { checkLimits } from "../services/subscriptionService.js";
 
 export const initiateBankLink = async (req, res) => {
 	try {
 		const { name, email } = req.body;
+
+		await checkLimits(req.user._id, "bank_connection");
 
 		const response = await mono.post("/accounts/initiate", {
 			customer: { name, email },
@@ -30,6 +34,16 @@ export const linkBankAccount = async (req, res) => {
 
 		const response = await mono.post("/accounts/auth", { code });
 		const account = response.data.data; // <-- important
+
+		await checkLimits(req.user._id, "bank_connection");
+
+		const user = await User.findById(req.user.id);
+
+		if (user.subscription.plan === "free") {
+			return res.status(403).json({
+				error: "Upgrade to connect bank accounts",
+			});
+		}
 
 		const connection = await BankConnection.create({
 			userId: req.user._id,

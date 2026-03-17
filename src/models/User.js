@@ -47,6 +47,20 @@ const userSchema = new mongoose.Schema({
 	isVerified: { type: Boolean, default: false },
 	otp: Number,
 	otpExpires: Date,
+	subscription: {
+		plan: {
+			type: String,
+			enum: ["free", "basic", "pro"],
+			default: "free",
+		},
+		startDate: Date,
+		endDate: Date,
+		status: {
+			type: String,
+			enum: ["active", "expired"],
+			default: "active",
+		},
+	},
 
 	// User budgets
 	budgets: [

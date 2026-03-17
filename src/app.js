@@ -11,6 +11,7 @@ import categoryRoutes from "./routes/categoryRoutes.js";
 import insightRoutes from "./routes/insight.js";
 import notificationRoutes from "./routes/notifications.js";
 import savingsRoutes from "./routes/savings.js";
+import subscriptionRoutes from "./routes/subscription.js";
 import transactionRoutes from "./routes/transactions.js";
 import userRoutes from "./routes/users.js";
 import walletRoutes from "./routes/wallet.js";
@@ -31,6 +32,7 @@ app.use("/api/insights", insightRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/account", bankRoutes);
 app.use("/api", monoWebhookRouter);
+app.use("/api/subscription", subscriptionRoutes);
 
 // Error handler
 app.use(errorMiddleware);

@@ -3,6 +3,7 @@ import Budget from "../models/Budget.js";
 import Category from "../models/Category.js";
 import Transaction from "../models/Transaction.js";
 import mono from "../services/monoService.js";
+import { checkLimits } from "../services/subscriptionService.js";
 
 // List all transactions
 export const listTransactions = async (req, res) => {
@@ -35,6 +36,7 @@ export const createTransaction = async (req, res) => {
 		if (!req.user || !req.user._id) {
 			return res.status(401).json({ error: "Unauthorized: user missing" });
 		}
+		await checkLimits(req.user._id || req.user, "manual_transaction");
 
 		let categoryName = null;
 		if (categoryId) {
