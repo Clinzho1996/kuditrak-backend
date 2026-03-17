@@ -2,12 +2,12 @@
 
 export const LIMITS = {
 	free: {
-		manualTransactions: 15,
+		manualTransactions: 25,
 		bankConnections: 0,
 		budgets: 3,
 	},
 	basic: {
-		manualTransactions: Infinity,
+		manualTransactions: 100,
 		bankConnections: 3,
 		budgets: 10,
 	},
