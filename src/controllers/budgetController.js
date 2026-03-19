@@ -187,3 +187,81 @@ export const deleteBudget = async (req, res) => {
 		res.status(500).json({ error: err.message });
 	}
 };
+
+/*
+|--------------------------------------------------------------------------
+| Get Total Budget Insights (Across All Budgets)
+|--------------------------------------------------------------------------
+*/
+export const getTotalBudgetInsights = async (req, res) => {
+	try {
+		const userId = req.user._id;
+		const startOfMonth = new Date(
+			new Date().getFullYear(),
+			new Date().getMonth(),
+			1,
+		);
+
+		// Get all budgets for the user
+		const budgets = await Budget.find({ userId });
+
+		if (!budgets || budgets.length === 0) {
+			return res.status(200).json({
+				success: true,
+				data: {
+					totalBudget: 0,
+					totalSpent: 0,
+					totalRemaining: 0,
+					overallPercentage: 0,
+					budgetCount: 0,
+					status: "no_budgets",
+				},
+			});
+		}
+
+		// Calculate totals
+		let totalBudget = 0;
+		let totalSpent = 0;
+
+		for (const budget of budgets) {
+			totalBudget += budget.amount;
+
+			// Get transactions for this budget
+			const transactions = await Transaction.find({
+				userId,
+				category: budget.name,
+				type: "expense",
+				createdAt: { $gte: startOfMonth },
+			});
+
+			const spent = transactions.reduce((sum, t) => sum + t.amount, 0);
+			totalSpent += spent;
+		}
+
+		const totalRemaining = totalBudget - totalSpent;
+		const overallPercentage = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
+
+		// Determine overall status
+		let status = "safe";
+		if (overallPercentage > 90) status = "danger";
+		else if (overallPercentage > 70) status = "warning";
+
+		res.status(200).json({
+			success: true,
+			data: {
+				totalBudget,
+				totalSpent,
+				totalRemaining,
+				overallPercentage,
+				budgetCount: budgets.length,
+				status,
+				// Format for frontend compatibility
+				spent: totalSpent,
+				total: totalBudget,
+				percentage: Math.round(overallPercentage),
+			},
+		});
+	} catch (err) {
+		res.status(500).json({ error: err.message });
+	}
+};
