@@ -272,6 +272,7 @@ export const deleteBucket = async (req, res) => {
 };
 
 // Credit a bucket (manual deposit)
+// Credit a bucket (manual deposit)
 export const creditBucket = async (req, res) => {
 	try {
 		const { id } = req.params;
@@ -295,6 +296,11 @@ export const creditBucket = async (req, res) => {
 			return res.status(404).json({ error: "Wallet not found" });
 		}
 
+		// Log current balances
+		console.log("Current wallet balance:", wallet.balance);
+		console.log("Current bucket amount:", bucket.currentAmount);
+		console.log("Amount to add:", amount);
+
 		if (wallet.balance < amount) {
 			return res.status(400).json({ error: "Insufficient wallet balance" });
 		}
@@ -315,6 +321,12 @@ export const creditBucket = async (req, res) => {
 		bucket.currentAmount += amount;
 		await bucket.save();
 
+		// Get the updated wallet to ensure we have the latest balance
+		const updatedWallet = await Wallet.findOne({ userId: req.user._id });
+
+		console.log("Updated wallet balance:", updatedWallet.balance);
+		console.log("Updated bucket amount:", bucket.currentAmount);
+
 		// Check if bucket is completed
 		if (bucket.currentAmount >= bucket.targetAmount) {
 			// Stop auto-save if completed
@@ -328,7 +340,12 @@ export const creditBucket = async (req, res) => {
 		res.json({
 			success: true,
 			bucket,
-			wallet,
+			wallet: {
+				_id: updatedWallet._id,
+				balance: updatedWallet.balance,
+				allocated: updatedWallet.allocated || 0,
+				available: updatedWallet.balance - (updatedWallet.allocated || 0),
+			},
 			message: "Deposit successful",
 		});
 	} catch (err) {
@@ -366,6 +383,10 @@ export const withdrawFromBucket = async (req, res) => {
 			return res.status(404).json({ error: "Wallet not found" });
 		}
 
+		console.log("Current wallet balance before withdrawal:", wallet.balance);
+		console.log("Current bucket amount:", bucket.currentAmount);
+		console.log("Amount to withdraw:", amount);
+
 		// Deduct from bucket
 		bucket.currentAmount -= amount;
 		await bucket.save();
@@ -374,11 +395,25 @@ export const withdrawFromBucket = async (req, res) => {
 		wallet.balance += amount;
 		await wallet.save();
 
+		// Get the updated wallet
+		const updatedWallet = await Wallet.findOne({ userId: req.user._id });
+
+		console.log(
+			"Updated wallet balance after withdrawal:",
+			updatedWallet.balance,
+		);
+		console.log("Updated bucket amount:", bucket.currentAmount);
+
 		res.status(200).json({
 			success: true,
 			message: "Withdrawal successful",
 			bucket,
-			wallet,
+			wallet: {
+				_id: updatedWallet._id,
+				balance: updatedWallet.balance,
+				allocated: updatedWallet.allocated || 0,
+				available: updatedWallet.balance - (updatedWallet.allocated || 0),
+			},
 		});
 	} catch (err) {
 		console.error("Withdraw from bucket error:", err);
