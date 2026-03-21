@@ -2,9 +2,9 @@ import mongoose from "mongoose";
 import SavingsBucket from "../models/SavingsBucket.js";
 import Transaction from "../models/Transaction.js";
 import Wallet from "../models/Wallet.js";
-import { initiatePayout } from "../services/paymentGateway.js";
+import { initiatePayout, verifyTopup } from "../services/paymentGateway.js";
 
-import { createTopUp, verifyTopUp } from "../services/paymentGateway.js";
+import { createTopUp } from "../services/paymentGateway.js";
 
 export const topUpWallet = async (req, res) => {
 	try {
@@ -46,7 +46,7 @@ export const verifyWalletTopUp = async (req, res) => {
 			return res.status(400).json({ error: "Reference is required" });
 		}
 
-		const verification = await verifyTopUp(reference);
+		const verification = await verifyTopup(reference);
 
 		if (!verification.status || verification.data.status !== "success") {
 			return res.status(400).json({ error: "Payment not successful" });
