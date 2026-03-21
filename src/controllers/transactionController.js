@@ -260,7 +260,6 @@ export const getUnbudgetedTransactions = async (req, res) => {
 	try {
 		const transactions = await Transaction.find({
 			userId: req.user._id,
-			source: "bank",
 			budgetId: { $exists: false },
 		});
 
