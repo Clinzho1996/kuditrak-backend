@@ -1,4 +1,5 @@
 import axios from "axios";
+import Wallet from "../models/Wallet";
 
 export const createTopUp = async ({ email, amount, reference }) => {
 	try {
@@ -27,20 +28,60 @@ export const createTopUp = async ({ email, amount, reference }) => {
 	}
 };
 
-export const verifyTopUp = async (reference) => {
+export const verifyTopup = async (req, res) => {
 	try {
+		const { reference } = req.query;
+		
+		console.log('Paystack callback received for reference:', reference);
+
+		// Verify with Paystack
 		const response = await axios.get(
 			`https://api.paystack.co/transaction/verify/${reference}`,
 			{
 				headers: {
-					Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
+					Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
 				},
-			},
+			}
 		);
 
-		return response.data;
+		const { data } = response.data;
+		
+		if (data.status === 'success') {
+			console.log('Payment verified successfully:', reference);
+			
+			// Update transaction status
+			await Transaction.findOneAndUpdate(
+				{ reference: reference },
+				{ status: 'success', metadata: data }
+			);
+
+			// Update wallet balance
+			const userId = data.metadata.userId;
+			const wallet = await Wallet.findOne({ userId: userId });
+			
+			if (wallet) {
+				wallet.balance += data.amount / 100;
+				await wallet.save();
+				console.log('Wallet updated:', wallet.balance);
+			}
+
+			// Now redirect to APP DEEP LINK (NOT backend again)
+			const amount = data.amount / 100;
+			const appDeepLink = `kuditrak://payment/success?reference=${reference}&amount=${amount}`;
+			
+			console.log('Redirecting to app:', appDeepLink);
+			
+			// Redirect to app deep link
+			return res.redirect(appDeepLink);
+		} else {
+			throw new Error('Payment verification failed');
+		}
 	} catch (error) {
-		throw new Error("Payment verification failed");
+		console.error('Verify topup error:', error.response?.data || error.message);
+		
+		// Redirect to app with failure
+		const appDeepLink = `kuditrak://payment/failed?reference=${reference}`;
+		return res.redirect(appDeepLink);
 	}
 };
 
