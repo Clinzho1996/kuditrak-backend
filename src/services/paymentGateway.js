@@ -1,7 +1,5 @@
 // backend/services/paymentGateway.js
 import axios from "axios";
-import Transaction from "../models/Transaction.js";
-import Wallet from "../models/Wallet.js";
 
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET;
 const BACKEND_URL =
@@ -56,11 +54,16 @@ export const createTopUp = async ({ email, amount, reference, userId }) => {
 };
 
 // backend/services/paymentGateway.js
+// backend/services/paymentGateway.js
 export const verifyTopup = async (req, res) => {
 	try {
-		const { reference } = req.query;
+		// Handle both query and body parameters
+		const reference =
+			req.query.reference || req.query.trxref || req.body.reference;
 
-		console.log("🔔 Paystack callback received for reference:", reference);
+		console.log("🔔 Paystack callback received");
+		console.log("Query params:", req.query);
+		console.log("Reference:", reference);
 
 		if (!reference) {
 			console.error("No reference provided in callback");
@@ -94,10 +97,12 @@ export const verifyTopup = async (req, res) => {
 				return res.redirect("kuditrak://payment/failed?error=missing_user_id");
 			}
 
-			// Find transaction by reference and userId
+			// Find transaction by transactionId
+			const Transaction = await import("../models/Transaction.js").then(
+				(m) => m.default,
+			);
 			const transaction = await Transaction.findOne({
 				transactionId: reference,
-				userId: userId,
 			});
 
 			if (!transaction) {
@@ -113,6 +118,7 @@ export const verifyTopup = async (req, res) => {
 			await transaction.save();
 
 			// Update wallet balance
+			const Wallet = await import("../models/Wallet.js").then((m) => m.default);
 			const wallet = await Wallet.findOne({ userId: userId });
 
 			if (wallet) {
@@ -145,7 +151,7 @@ export const verifyTopup = async (req, res) => {
 		}
 	} catch (error) {
 		console.error("Verify topup error:", error.response?.data || error.message);
-		const reference = req.query?.reference || "unknown";
+		const reference = req.query?.reference || req.query?.trxref || "unknown";
 		return res.redirect(
 			`kuditrak://payment/failed?reference=${reference}&error=${encodeURIComponent(error.message)}`,
 		);
