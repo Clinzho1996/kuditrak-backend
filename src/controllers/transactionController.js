@@ -19,6 +19,7 @@ export const listTransactions = async (req, res) => {
 };
 
 // Create manual transaction
+// Update createTransaction to automatically update budget spent if category matches
 export const createTransaction = async (req, res) => {
 	try {
 		const { amount, type, description, categoryId, date } = req.body;
@@ -39,6 +40,8 @@ export const createTransaction = async (req, res) => {
 		await checkLimits(req.user._id || req.user, "manual_transaction");
 
 		let categoryName = null;
+		let budgetId = null;
+
 		if (categoryId) {
 			const category = await Category.findOne({
 				_id: categoryId,
@@ -50,6 +53,33 @@ export const createTransaction = async (req, res) => {
 			}
 
 			categoryName = category.name;
+
+			// Try to find a matching budget for expense transactions
+			if (type === "expense") {
+				const budgets = await Budget.find({
+					userId: req.user._id,
+					startDate: { $lte: new Date() },
+					endDate: { $gte: new Date() },
+				});
+
+				// Find budget that matches category name (case insensitive partial match)
+				const matchingBudget = budgets.find(
+					(budget) =>
+						budget.name.toLowerCase().includes(categoryName.toLowerCase()) ||
+						categoryName.toLowerCase().includes(budget.name.toLowerCase()),
+				);
+
+				if (matchingBudget) {
+					budgetId = matchingBudget._id;
+
+					// Update budget spent
+					matchingBudget.spent = (matchingBudget.spent || 0) + Number(amount);
+					await matchingBudget.save();
+					console.log(
+						`Updated budget ${matchingBudget.name} spent to ${matchingBudget.spent}`,
+					);
+				}
+			}
 		}
 
 		const transactionId = `TRX-${req.user._id}-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
@@ -61,7 +91,8 @@ export const createTransaction = async (req, res) => {
 			description: description || "",
 			categoryId: categoryId || null,
 			categoryName,
-			source: "manual", // matches enum
+			budgetId: budgetId,
+			source: "manual",
 			date: date ? new Date(date) : new Date(),
 			transactionId,
 		});
@@ -74,6 +105,7 @@ export const createTransaction = async (req, res) => {
 };
 
 // Update a transaction
+// Update transaction - also update budget spent
 export const updateTransaction = async (req, res) => {
 	try {
 		const { id } = req.params;
@@ -86,6 +118,12 @@ export const updateTransaction = async (req, res) => {
 		if (!transaction)
 			return res.status(404).json({ error: "Transaction not found" });
 
+		// Store old values to revert budget spent if needed
+		const oldAmount = transaction.amount;
+		const oldBudgetId = transaction.budgetId;
+		let newBudgetId = transaction.budgetId;
+
+		// Handle category change and potential budget update
 		if (categoryId) {
 			const category = await Category.findOne({
 				_id: categoryId,
@@ -93,37 +131,111 @@ export const updateTransaction = async (req, res) => {
 			});
 			if (!category)
 				return res.status(400).json({ error: "Invalid category selected" });
+
 			transaction.categoryId = category._id;
 			transaction.categoryName = category.name;
+
+			// Try to find matching budget for expense transactions
+			if (type === "expense" && !transaction.budgetId) {
+				const budgets = await Budget.find({
+					userId: req.user._id,
+					startDate: { $lte: new Date() },
+					endDate: { $gte: new Date() },
+				});
+
+				const matchingBudget = budgets.find(
+					(budget) =>
+						budget.name.toLowerCase().includes(category.name.toLowerCase()) ||
+						category.name.toLowerCase().includes(budget.name.toLowerCase()),
+				);
+
+				if (matchingBudget) {
+					newBudgetId = matchingBudget._id;
+				}
+			}
 		}
 
-		if (amount) transaction.amount = amount;
+		// Update budget spent if amount or budget changed
+		if (
+			oldBudgetId &&
+			(oldAmount !== Number(amount) || newBudgetId !== oldBudgetId)
+		) {
+			const oldBudget = await Budget.findOne({
+				_id: oldBudgetId,
+				userId: req.user._id,
+			});
+			if (oldBudget) {
+				oldBudget.spent = Math.max(0, (oldBudget.spent || 0) - oldAmount);
+				await oldBudget.save();
+			}
+		}
+
+		if (newBudgetId && newBudgetId !== oldBudgetId) {
+			const newBudget = await Budget.findOne({
+				_id: newBudgetId,
+				userId: req.user._id,
+			});
+			if (newBudget) {
+				newBudget.spent = (newBudget.spent || 0) + Number(amount);
+				await newBudget.save();
+			}
+		} else if (newBudgetId && oldAmount !== Number(amount)) {
+			const budget = await Budget.findOne({
+				_id: newBudgetId,
+				userId: req.user._id,
+			});
+			if (budget) {
+				budget.spent = (budget.spent || 0) - oldAmount + Number(amount);
+				await budget.save();
+			}
+		}
+
+		// Update transaction fields
+		if (amount) transaction.amount = Number(amount);
 		if (type) transaction.type = type;
 		if (description) transaction.description = description;
 		if (date) transaction.date = date;
+		if (newBudgetId) transaction.budgetId = newBudgetId;
 
 		await transaction.save();
 
 		res.status(200).json({ success: true, transaction });
 	} catch (err) {
+		console.error("Update transaction error:", err);
 		res.status(500).json({ error: err.message });
 	}
 };
 
 // Delete a transaction
+// Delete transaction - also revert budget spent
 export const deleteTransaction = async (req, res) => {
 	try {
 		const { id } = req.params;
 
-		const transaction = await Transaction.findOneAndDelete({
+		const transaction = await Transaction.findOne({
 			_id: id,
 			userId: req.user._id,
 		});
 		if (!transaction)
 			return res.status(404).json({ error: "Transaction not found" });
 
+		// Revert budget spent if transaction was linked to a budget
+		if (transaction.budgetId) {
+			const budget = await Budget.findOne({
+				_id: transaction.budgetId,
+				userId: req.user._id,
+			});
+			if (budget) {
+				budget.spent = Math.max(0, (budget.spent || 0) - transaction.amount);
+				await budget.save();
+			}
+		}
+
+		await Transaction.findByIdAndDelete(id);
+
 		res.status(200).json({ success: true, message: "Transaction deleted" });
 	} catch (err) {
+		console.error("Delete transaction error:", err);
 		res.status(500).json({ error: err.message });
 	}
 };
@@ -201,6 +313,7 @@ export const getTransactionById = async (req, res) => {
 	}
 };
 
+// Update linkTransactionToBudget to also update budget spent
 export const linkTransactionToBudget = async (req, res) => {
 	try {
 		const { transactionId, budgetId } = req.body;
@@ -227,15 +340,36 @@ export const linkTransactionToBudget = async (req, res) => {
 			});
 		}
 
-		transaction.budgetId = budget._id;
+		// If transaction is already linked to a budget, revert the old budget's spent
+		if (transaction.budgetId && transaction.budgetId.toString() !== budgetId) {
+			const oldBudget = await Budget.findOne({
+				_id: transaction.budgetId,
+				userId: req.user._id,
+			});
+			if (oldBudget) {
+				oldBudget.spent = Math.max(
+					0,
+					(oldBudget.spent || 0) - transaction.amount,
+				);
+				await oldBudget.save();
+			}
+		}
 
+		// Update budget spent
+		budget.spent = (budget.spent || 0) + transaction.amount;
+		await budget.save();
+
+		// Link transaction to budget
+		transaction.budgetId = budget._id;
 		await transaction.save();
 
 		res.status(200).json({
 			success: true,
 			transaction,
+			budget,
 		});
 	} catch (err) {
+		console.error("Link transaction to budget error:", err);
 		res.status(500).json({ error: err.message });
 	}
 };
