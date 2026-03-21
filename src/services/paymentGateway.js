@@ -1,91 +1,139 @@
+// backend/services/paymentGateway.js
 import axios from "axios";
+import Transaction from "../models/Transaction.js";
 import Wallet from "../models/Wallet.js";
 
-export const createTopUp = async ({ email, amount, reference }) => {
+const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET;
+const BACKEND_URL =
+	process.env.BACKEND_URL || "https://kuditrak-backend.onrender.com";
+
+export const createTopUp = async ({ email, amount, reference, userId }) => {
 	try {
+		console.log("Creating Paystack transaction for:", {
+			email,
+			amount,
+			reference,
+			userId,
+		});
+
 		const response = await axios.post(
 			"https://api.paystack.co/transaction/initialize",
 			{
 				email,
-				amount: amount * 100, // convert to kobo
+				amount: amount * 100,
 				reference,
-				callback_url: "https://kuditrak.com/payment/verify",
+				callback_url: `${BACKEND_URL}/api/wallet/verify`, // BACKEND endpoint
+				metadata: {
+					userId: userId.toString(),
+					amount: amount,
+					type: "topup",
+				},
 			},
 			{
 				headers: {
-					Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
+					Authorization: `Bearer ${PAYSTACK_SECRET}`,
 					"Content-Type": "application/json",
 				},
 			},
 		);
+
+		console.log("Paystack response:", response.data);
 
 		return {
 			paymentLink: response.data.data.authorization_url,
 			reference: response.data.data.reference,
 		};
 	} catch (error) {
-		throw new Error("Failed to initialize Paystack transaction");
+		console.error(
+			"Paystack initialize error:",
+			error.response?.data || error.message,
+		);
+		throw new Error(
+			error.response?.data?.message ||
+				"Failed to initialize Paystack transaction",
+		);
 	}
 };
 
-export const verifyTopup = async (req, res) => {
+export const verifyTopupCallback = async (req, res) => {
 	try {
 		const { reference } = req.query;
 
-		console.log("Paystack callback received for reference:", reference);
+		console.log("🔔 Paystack callback received for reference:", reference);
+
+		if (!reference) {
+			console.error("No reference provided in callback");
+			return res.redirect("kuditrak://payment/failed?error=missing_reference");
+		}
 
 		// Verify with Paystack
-		const response = await axios.get(
+		const verificationResponse = await axios.get(
 			`https://api.paystack.co/transaction/verify/${reference}`,
 			{
 				headers: {
-					Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+					Authorization: `Bearer ${PAYSTACK_SECRET}`,
 				},
 			},
 		);
 
-		const { data } = response.data;
+		const { data } = verificationResponse.data;
+
+		console.log("Paystack verification result:", {
+			status: data.status,
+			reference: data.reference,
+		});
 
 		if (data.status === "success") {
-			console.log("Payment verified successfully:", reference);
+			// Find transaction
+			const transaction = await Transaction.findOne({ reference });
 
-			// Update transaction status
-			await Transaction.findOneAndUpdate(
-				{ reference: reference },
-				{ status: "success", metadata: data },
-			);
-
-			// Update wallet balance
-			const userId = data.metadata.userId;
-			const wallet = await Wallet.findOne({ userId: userId });
-
-			if (wallet) {
-				wallet.balance += data.amount / 100;
-				await wallet.save();
-				console.log("Wallet updated:", wallet.balance);
+			if (!transaction) {
+				console.error("Transaction not found for reference:", reference);
+				return res.redirect(
+					"kuditrak://payment/failed?error=transaction_not_found",
+				);
 			}
 
-			// Now redirect to APP DEEP LINK (NOT backend again)
-			const amount = data.amount / 100;
-			const appDeepLink = `kuditrak://payment/success?reference=${reference}&amount=${amount}`;
+			// Update transaction
+			transaction.status = "success";
+			transaction.metadata = data;
+			await transaction.save();
 
-			console.log("Redirecting to app:", appDeepLink);
+			// Update wallet balance
+			const wallet = await Wallet.findOne({ userId: transaction.userId });
+
+			if (wallet) {
+				const amountAdded = data.amount / 100;
+				wallet.balance += amountAdded;
+				await wallet.save();
+				console.log(
+					`✅ Wallet updated: +₦${amountAdded}, New balance: ₦${wallet.balance}`,
+				);
+			}
 
 			// Redirect to app deep link
+			const amount = data.amount / 100;
+			const appDeepLink = `kuditrak://payment/success?reference=${reference}&amount=${amount}`;
+			console.log("🔗 Redirecting to app:", appDeepLink);
+
 			return res.redirect(appDeepLink);
 		} else {
-			throw new Error("Payment verification failed");
+			console.error(
+				"Payment verification failed - status not success:",
+				data.status,
+			);
+			return res.redirect(
+				`kuditrak://payment/failed?reference=${reference}&error=verification_failed`,
+			);
 		}
 	} catch (error) {
 		console.error("Verify topup error:", error.response?.data || error.message);
-
-		// Redirect to app with failure
-		const appDeepLink = `kuditrak://payment/failed?reference=${reference}`;
-		return res.redirect(appDeepLink);
+		const reference = req.query?.reference || "unknown";
+		return res.redirect(
+			`kuditrak://payment/failed?reference=${reference}&error=${encodeURIComponent(error.message)}`,
+		);
 	}
 };
-
-const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET;
 
 // Create a payout to a user bank account
 export const initiatePayout = async ({
@@ -95,7 +143,6 @@ export const initiatePayout = async ({
 	reference,
 }) => {
 	try {
-		// Paystack requires amount in kobo (multiply by 100)
 		const koboAmount = Number(amount) * 100;
 
 		const response = await axios.post(
@@ -104,7 +151,7 @@ export const initiatePayout = async ({
 				source: "balance",
 				reason: "Wallet withdrawal",
 				amount: koboAmount,
-				recipient: bankAccountId, // must be created via Paystack Transfer Recipient
+				recipient: bankAccountId,
 				reference,
 			},
 			{
@@ -157,20 +204,19 @@ export const initializeSubscriptionPayment = async ({
 		}
 
 		const selectedPlan = PLANS[plan];
-
 		const reference = `sub_${plan}_${userId}_${Date.now()}`;
 
 		const response = await axios.post(
 			"https://api.paystack.co/transaction/initialize",
 			{
 				email,
-				amount: selectedPlan.amount * 100, // convert to kobo
+				amount: selectedPlan.amount * 100,
 				reference,
-				callback_url: "https://kuditrak.com/subscription/verify",
+				callback_url: `${BACKEND_URL}/api/subscription/verify`,
 				metadata: {
 					type: "subscription",
 					plan,
-					userId,
+					userId: userId.toString(),
 				},
 			},
 			{
@@ -199,8 +245,12 @@ export const initializeSubscriptionPayment = async ({
 // ===============================
 // VERIFY SUBSCRIPTION PAYMENT
 // ===============================
-export const verifySubscriptionPayment = async (reference) => {
+export const verifySubscriptionPayment = async (req, res) => {
 	try {
+		const { reference } = req.query;
+
+		console.log("Subscription callback received for reference:", reference);
+
 		const response = await axios.get(
 			`https://api.paystack.co/transaction/verify/${reference}`,
 			{
@@ -213,10 +263,9 @@ export const verifySubscriptionPayment = async (reference) => {
 		const data = response.data.data;
 
 		if (data.status !== "success") {
-			return {
-				success: false,
-				message: "Payment not successful",
-			};
+			return res.redirect(
+				`kuditrak://subscription/failed?reference=${reference}`,
+			);
 		}
 
 		const metadata = data.metadata || {};
@@ -227,19 +276,37 @@ export const verifySubscriptionPayment = async (reference) => {
 			throw new Error("Invalid plan in metadata");
 		}
 
-		return {
-			success: true,
-			plan,
-			userId,
-			amount: data.amount / 100, // convert back from kobo
-			reference: data.reference,
-			paidAt: data.paid_at,
-		};
+		// Update user subscription
+		const User = await import("../models/User.js").then((m) => m.default);
+		const user = await User.findById(userId);
+
+		if (user) {
+			const startDate = new Date();
+			const endDate = new Date();
+
+			if (plan === "basic") {
+				endDate.setMonth(endDate.getMonth() + 1);
+			} else if (plan === "pro") {
+				endDate.setMonth(endDate.getMonth() + 3);
+			}
+
+			user.subscription = {
+				plan: plan,
+				status: "active",
+				startDate: startDate,
+				endDate: endDate,
+			};
+			await user.save();
+		}
+
+		const appDeepLink = `kuditrak://subscription/success?reference=${reference}&plan=${plan}`;
+		console.log("Redirecting to app:", appDeepLink);
+
+		return res.redirect(appDeepLink);
 	} catch (error) {
-		console.error(
-			"Verify Subscription Error:",
-			error.response?.data || error.message,
+		console.error("Verify Subscription Error:", error.message);
+		return res.redirect(
+			`kuditrak://subscription/failed?reference=${reference}`,
 		);
-		throw new Error("Subscription verification failed");
 	}
 };
