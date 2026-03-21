@@ -6,16 +6,21 @@ import { initiatePayout, verifyTopup } from "../services/paymentGateway.js";
 
 import { createTopUp } from "../services/paymentGateway.js";
 
+// backend/controllers/walletController.js
 export const topUpWallet = async (req, res) => {
 	try {
 		const { amount } = req.body;
 
-		const reference = `TRX-${Date.now()}-${req.user._id}`;
+		// Make sure userId is passed correctly
+		const userId = req.user._id;
+
+		const reference = `TRX-${Date.now()}-${userId.toString().substring(0, 8)}`;
 
 		const { paymentLink } = await createTopUp({
 			email: req.user.email,
 			amount,
 			reference,
+			userId: userId, // Add this line - pass the userId
 		});
 
 		const wallet = await Wallet.findOne({ userId: req.user._id });
@@ -33,6 +38,7 @@ export const topUpWallet = async (req, res) => {
 
 		res.json({ paymentLink, reference });
 	} catch (err) {
+		console.error("Topup error:", err);
 		res.status(500).json({ error: err.message });
 	}
 };

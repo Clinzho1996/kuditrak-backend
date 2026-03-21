@@ -55,6 +55,7 @@ export const createTopUp = async ({ email, amount, reference, userId }) => {
 	}
 };
 
+// backend/services/paymentGateway.js
 export const verifyTopup = async (req, res) => {
 	try {
 		const { reference } = req.query;
@@ -81,11 +82,23 @@ export const verifyTopup = async (req, res) => {
 		console.log("Paystack verification result:", {
 			status: data.status,
 			reference: data.reference,
+			metadata: data.metadata,
 		});
 
 		if (data.status === "success") {
-			// Find transaction
-			const transaction = await Transaction.findOne({ reference });
+			// Get userId from metadata
+			const userId = data.metadata?.userId;
+
+			if (!userId) {
+				console.error("No userId in metadata for reference:", reference);
+				return res.redirect("kuditrak://payment/failed?error=missing_user_id");
+			}
+
+			// Find transaction by reference and userId
+			const transaction = await Transaction.findOne({
+				transactionId: reference,
+				userId: userId,
+			});
 
 			if (!transaction) {
 				console.error("Transaction not found for reference:", reference);
@@ -95,20 +108,24 @@ export const verifyTopup = async (req, res) => {
 			}
 
 			// Update transaction
-			transaction.status = "success";
+			transaction.status = "Completed";
 			transaction.metadata = data;
 			await transaction.save();
 
 			// Update wallet balance
-			const wallet = await Wallet.findOne({ userId: transaction.userId });
+			const wallet = await Wallet.findOne({ userId: userId });
 
 			if (wallet) {
 				const amountAdded = data.amount / 100;
 				wallet.balance += amountAdded;
+				wallet.available += amountAdded;
 				await wallet.save();
 				console.log(
-					`✅ Wallet updated: +₦${amountAdded}, New balance: ₦${wallet.balance}`,
+					`✅ Wallet updated: +₦${amountAdded}, New balance: ₦${wallet.balance}, Available: ₦${wallet.available}`,
 				);
+			} else {
+				console.error("Wallet not found for user:", userId);
+				return res.redirect("kuditrak://payment/failed?error=wallet_not_found");
 			}
 
 			// Redirect to app deep link
