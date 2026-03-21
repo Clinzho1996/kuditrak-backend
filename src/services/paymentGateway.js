@@ -8,7 +8,7 @@ export const createTopUp = async ({ email, amount, reference }) => {
 				email,
 				amount: amount * 100, // convert to kobo
 				reference,
-				callback_url: "https://kuditrak.ng/payment/verify",
+				callback_url: "https://kuditrak.com/payment/verify",
 			},
 			{
 				headers: {
@@ -125,7 +125,7 @@ export const initializeSubscriptionPayment = async ({
 				email,
 				amount: selectedPlan.amount * 100, // convert to kobo
 				reference,
-				callback_url: "https://kuditrak.ng/subscription/verify",
+				callback_url: "https://kuditrak.com/subscription/verify",
 				metadata: {
 					type: "subscription",
 					plan,
