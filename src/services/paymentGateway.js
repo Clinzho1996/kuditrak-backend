@@ -55,7 +55,7 @@ export const createTopUp = async ({ email, amount, reference, userId }) => {
 	}
 };
 
-export const verifyTopupCallback = async (req, res) => {
+export const verifyTopup = async (req, res) => {
 	try {
 		const { reference } = req.query;
 
