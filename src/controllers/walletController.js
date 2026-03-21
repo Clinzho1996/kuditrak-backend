@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 import SavingsBucket from "../models/SavingsBucket.js";
 import Transaction from "../models/Transaction.js";
 import Wallet from "../models/Wallet.js";
-import { initiatePayout, verifyTopup } from "../services/paymentGateway.js";
+import { initiatePayout } from "../services/paymentGateway.js";
 
 import { createTopUp } from "../services/paymentGateway.js";
 
@@ -43,19 +43,29 @@ export const topUpWallet = async (req, res) => {
 	}
 };
 
+// backend/controllers/walletController.js
 export const verifyWalletTopUp = async (req, res) => {
 	try {
 		const reference =
 			req.query.reference || req.query.trxref || req.body.reference;
 
+		console.log("🔔 VerifyWalletTopUp called");
+		console.log("Reference:", reference);
+		console.log("Query params:", req.query);
+
 		if (!reference) {
-			return res.status(400).json({ error: "Reference is required" });
+			console.error("No reference provided");
+			return res.redirect("kuditrak://payment/failed?error=missing_reference");
 		}
 
-		const verification = await verifyTopup(reference);
+		// Call the payment gateway to verify with Paystack
+		const verification = await verifyWithPaystack(reference);
 
 		if (!verification.status || verification.data.status !== "success") {
-			return res.status(400).json({ error: "Payment not successful" });
+			console.error("Payment verification failed");
+			return res.redirect(
+				`kuditrak://payment/failed?reference=${reference}&error=verification_failed`,
+			);
 		}
 
 		const transaction = await Transaction.findOne({
@@ -63,36 +73,71 @@ export const verifyWalletTopUp = async (req, res) => {
 		});
 
 		if (!transaction) {
-			return res.status(404).json({ error: "Transaction not found" });
+			console.error("Transaction not found:", reference);
+			return res.redirect(
+				"kuditrak://payment/failed?error=transaction_not_found",
+			);
 		}
 
 		const wallet = await Wallet.findOne({ userId: transaction.userId });
 
 		if (!wallet) {
-			return res.status(404).json({ error: "Wallet not found for this user" });
+			console.error("Wallet not found for user:", transaction.userId);
+			return res.redirect("kuditrak://payment/failed?error=wallet_not_found");
 		}
 
 		if (transaction.status === "Completed") {
-			return res.json({ message: "Transaction already processed" });
+			console.log("Transaction already processed");
+			return res.redirect(
+				`kuditrak://payment/success?reference=${reference}&amount=${verification.data.amount / 100}`,
+			);
 		}
 
 		const amount = verification.data.amount / 100;
 
 		wallet.balance += amount;
 		wallet.available += amount;
-
 		await wallet.save();
 
 		transaction.status = "Completed";
 		await transaction.save();
 
-		res.json({
-			message: "Wallet funded successfully",
-			amount,
-			balance: wallet.balance,
-		});
+		console.log(
+			`✅ Wallet funded: +₦${amount}, New balance: ₦${wallet.balance}`,
+		);
+
+		// Redirect to app deep link
+		const appDeepLink = `kuditrak://payment/success?reference=${reference}&amount=${amount}`;
+		console.log("🔗 Redirecting to app:", appDeepLink);
+
+		return res.redirect(appDeepLink);
 	} catch (error) {
-		res.status(500).json({ error: error.message });
+		console.error("Verify wallet topup error:", error.message);
+		const reference = req.query?.reference || req.query?.trxref || "unknown";
+		return res.redirect(
+			`kuditrak://payment/failed?reference=${reference}&error=${encodeURIComponent(error.message)}`,
+		);
+	}
+};
+
+// Helper function to verify with Paystack
+const verifyWithPaystack = async (reference) => {
+	try {
+		const response = await axios.get(
+			`https://api.paystack.co/transaction/verify/${reference}`,
+			{
+				headers: {
+					Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
+				},
+			},
+		);
+		return response.data;
+	} catch (error) {
+		console.error(
+			"Paystack verification error:",
+			error.response?.data || error.message,
+		);
+		throw new Error("Failed to verify payment with Paystack");
 	}
 };
 
