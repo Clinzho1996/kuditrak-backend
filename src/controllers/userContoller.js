@@ -82,6 +82,47 @@ export const updateProfileImage = async (req, res) => {
 	}
 };
 
+export const updateProfile = async (req, res) => {
+	try {
+		const { fullName, email, phoneNumber } = req.body;
+		const userId = req.user._id;
+
+		// Find user
+		const user = await User.findById(userId);
+		if (!user) {
+			return res.status(404).json({ error: "User not found" });
+		}
+
+		// Check if email is being changed and if it's already taken
+		if (email && email !== user.email) {
+			const existingUser = await User.findOne({ email });
+			if (existingUser) {
+				return res.status(400).json({ error: "Email already in use" });
+			}
+			user.email = email;
+		}
+
+		// Update fields
+		if (fullName) user.fullName = fullName;
+		if (phoneNumber) user.phoneNumber = phoneNumber;
+
+		// Save updated user
+		await user.save();
+
+		// Return updated user without password
+		const updatedUser = await User.findById(userId).select("-password");
+
+		res.status(200).json({
+			success: true,
+			message: "Profile updated successfully",
+			user: updatedUser,
+		});
+	} catch (err) {
+		console.error("Update profile error:", err);
+		res.status(500).json({ error: err.message });
+	}
+};
+
 /*
 |--------------------------------------------------------------------------
 | Delete Account

@@ -4,6 +4,7 @@ import {
 	deleteAccount,
 	getInsights,
 	getProfile,
+	updateProfile,
 	updateProfileImage,
 } from "../controllers/userContoller.js";
 import protect from "../middleware/auth.js";
@@ -24,6 +25,7 @@ router.put(
 
 // Get financial insights
 router.get("/insights", protect, getInsights);
+router.put("/profile", protect, updateProfile);
 
 // Delete user account
 router.delete("/delete-account", protect, deleteAccount);

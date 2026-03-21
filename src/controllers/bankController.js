@@ -10,21 +10,37 @@ export const initiateBankLink = async (req, res) => {
 
 		await checkLimits(req.user._id, "bank_connection");
 
+		// Generate a unique reference
+		const timestamp = Date.now();
+		const randomStr = Math.random().toString(36).substring(2, 8);
+		const uniqueRef = `LINK_${req.user._id.substring(0, 8)}_${timestamp}_${randomStr}`;
+
+		console.log("Generated unique ref:", uniqueRef);
+
 		const response = await mono.post("/accounts/initiate", {
 			customer: { name, email },
-			meta: { ref: "99008877TEST" },
+			meta: {
+				ref: uniqueRef,
+				userId: req.user._id.toString(),
+			},
 			scope: "auth",
-			redirect_url: "https://yourfrontend.com/mono-redirect",
+			redirect_url: "https://kuditrak.com/mono-redirect", // Update this to your actual redirect URL
 		});
+
+		console.log("Mono response:", response.data);
 
 		res.status(200).json({
 			success: true,
-			monoUrl: response.data.data.mono_url, // frontend will redirect user here
+			monoUrl: response.data.data.mono_url,
 			customerId: response.data.data.customer,
+			ref: uniqueRef,
 		});
 	} catch (err) {
-		console.error(err.response?.data || err.message);
-		res.status(500).json({ error: err.message });
+		console.error("Mono error details:", err.response?.data || err.message);
+		res.status(500).json({
+			error: err.response?.data?.message || err.message,
+			details: err.response?.data,
+		});
 	}
 };
 
