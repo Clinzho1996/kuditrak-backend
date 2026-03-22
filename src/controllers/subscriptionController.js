@@ -1,15 +1,12 @@
+// backend/controllers/subscriptionController.js
 import User from "../models/User.js";
-import {
-	initializeSubscriptionPayment,
-	verifySubscriptionPayment,
-} from "../services/paymentGateway.js";
 
 // ===============================
 // GET CURRENT SUBSCRIPTION
 // ===============================
 export const getSubscription = async (req, res) => {
 	try {
-		const userId = req.user._id; // FIXED
+		const userId = req.user._id;
 
 		const user = await User.findById(userId).select("subscription");
 
@@ -50,111 +47,140 @@ export const getSubscription = async (req, res) => {
 };
 
 // ===============================
-// UPGRADE SUBSCRIPTION
+// VERIFY SUBSCRIPTION (Called after native purchase)
 // ===============================
-export const upgradeSubscription = async (req, res) => {
+// backend/controllers/subscriptionController.js
+export const verifySubscription = async (req, res) => {
 	try {
-		const userId = req.user._id; // from auth middleware
-		const { plan } = req.body;
+		const { transactionId, receipt, platform, productId } = req.body;
 
-		if (!plan) {
-			return res.status(400).json({ error: "Plan is required" });
+		// Map product ID to your internal plan
+		const planMap = {
+			monthly_basic: "basic",
+			monthly_pro: "pro",
+			quarterly_pro: "pro",
+			yearly_pro: "pro",
+		};
+
+		const plan = planMap[productId] || "basic";
+
+		// Verify with Apple or Google (using the receipt)
+		let isValid = false;
+
+		if (platform === "ios") {
+			// Call Apple's verifyReceipt endpoint with the receipt
+			const verifyResponse = await fetch(
+				"https://buy.itunes.apple.com/verifyReceipt",
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						"receipt-data": receipt,
+						password: process.env.APPLE_SHARED_SECRET,
+					}),
+				},
+			);
+			const result = await verifyResponse.json();
+			isValid = result.status === 0;
+		} else if (platform === "android") {
+			// Call Google's API with the purchase token
+			const token = await getGooglePlayAccessToken();
+			const verifyResponse = await fetch(
+				`https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${process.env.GOOGLE_PLAY_PACKAGE_NAME}/purchases/subscriptions/${productId}/tokens/${receipt}`,
+				{
+					headers: { Authorization: `Bearer ${token}` },
+				},
+			);
+			const result = await verifyResponse.json();
+			isValid = result.purchaseState === 0;
 		}
 
-		const user = await User.findById(userId);
-
-		if (!user) {
-			return res.status(404).json({ error: "User not found" });
+		if (!isValid) {
+			return res.status(400).json({ error: "Invalid receipt" });
 		}
 
-		// Prevent duplicate active subscription upgrade
-		if (
-			user.subscription?.status === "active" &&
-			user.subscription?.endDate > new Date()
-		) {
-			return res.status(400).json({
-				error: "You already have an active subscription",
-			});
+		// Update user subscription in your database
+		const user = await User.findById(req.user._id);
+		const now = new Date();
+		const expiry = new Date(now);
+
+		// Set expiry based on product ID
+		if (productId.includes("yearly")) {
+			expiry.setFullYear(expiry.getFullYear() + 1);
+		} else if (productId.includes("quarterly")) {
+			expiry.setMonth(expiry.getMonth() + 3);
+		} else {
+			expiry.setMonth(expiry.getMonth() + 1);
 		}
 
-		const payment = await initializeSubscriptionPayment({
-			email: user.email,
-			plan,
-			userId,
-		});
+		user.subscription = {
+			plan: plan,
+			status: "active",
+			startDate: now,
+			endDate: expiry,
+		};
+		await user.save();
 
-		return res.status(200).json({
-			success: true,
-			message: "Payment initialized",
-			data: payment,
-		});
+		res.json({ success: true, subscription: user.subscription });
 	} catch (err) {
-		console.error("Upgrade Subscription Error:", err.message);
-		return res.status(500).json({ error: err.message });
+		res.status(500).json({ error: err.message });
 	}
 };
 
 // ===============================
-// VERIFY SUBSCRIPTION PAYMENT
+// GET GOOGLE PLAY ACCESS TOKEN
 // ===============================
-export const verifySubscription = async (req, res) => {
+const getGooglePlayAccessToken = async () => {
 	try {
-		const { reference } = req.query;
+		const { GoogleAuth } = await import("google-auth-library");
 
-		if (!reference) {
-			return res.status(400).json({ error: "Reference is required" });
-		}
+		const auth = new GoogleAuth({
+			credentials: {
+				client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+				private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+			},
+			scopes: ["https://www.googleapis.com/auth/androidpublisher"],
+		});
 
-		const result = await verifySubscriptionPayment(reference);
+		const client = await auth.getClient();
+		const accessToken = await client.getAccessToken();
 
-		if (!result.success) {
-			return res.status(400).json({
-				error: "Payment verification failed",
-			});
-		}
+		return accessToken.token;
+	} catch (error) {
+		console.error("Error getting Google Play access token:", error);
+		throw error;
+	}
+};
 
-		const user = await User.findById(result.userId);
+// ===============================
+// CANCEL SUBSCRIPTION
+// ===============================
+export const cancelSubscription = async (req, res) => {
+	try {
+		const user = await User.findById(req.user._id);
 
 		if (!user) {
 			return res.status(404).json({ error: "User not found" });
 		}
 
-		// Prevent double processing (VERY IMPORTANT)
-		if (
-			user.subscription?.status === "active" &&
-			user.subscription?.endDate > new Date()
-		) {
-			return res.status(200).json({
-				success: true,
-				message: "Subscription already active",
-				plan: user.subscription.plan,
-			});
+		if (user.subscription?.status !== "active") {
+			return res
+				.status(400)
+				.json({ error: "No active subscription to cancel" });
 		}
 
-		// Assign subscription
-		const now = new Date();
-		const expiry = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-
-		user.subscription = {
-			plan: result.plan,
-			startDate: now,
-			endDate: expiry,
-			status: "active",
-		};
-
+		// Update subscription status
+		user.subscription.status = "cancelled";
 		await user.save();
 
 		return res.status(200).json({
 			success: true,
-			message: "Subscription activated successfully",
-			data: {
-				plan: result.plan,
-				startDate: now,
-				endDate: expiry,
-			},
+			message:
+				"Subscription cancelled successfully. You'll have access until the end of your billing period.",
+			data: user.subscription,
 		});
 	} catch (err) {
-		console.error("Verify Subscription Error:", err.message);
+		console.error("Cancel Subscription Error:", err.message);
 		return res.status(500).json({ error: err.message });
 	}
 };
