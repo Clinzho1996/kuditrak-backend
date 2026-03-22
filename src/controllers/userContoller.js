@@ -2,6 +2,7 @@ import { v2 as cloudinary } from "cloudinary";
 import dotenv from "dotenv";
 import User from "../models/User.js";
 import { generateFinancialInsights } from "../services/aiService.js";
+import BankConnection from "../models/BankConnection.js";
 
 dotenv.config();
 
@@ -146,6 +147,34 @@ export const deleteAccount = async (req, res) => {
 		res.status(200).json({
 			message: "Account deleted successfully",
 			reason,
+		});
+	} catch (err) {
+		res.status(500).json({ error: err.message });
+	}
+};
+
+// backend/controllers/accountController.js
+export const checkConnectionLimit = async (req, res) => {
+	try {
+		const userId = req.user._id;
+		const user = await User.findById(userId);
+		const plan = user.subscription?.plan || "free";
+		
+		const limits = {
+			free: 0,
+			basic: 3,
+			pro: Infinity,
+		};
+		
+		const bankCount = await BankConnection.countDocuments({ userId, status: "Active" });
+		const canConnect = bankCount < limits[plan];
+		
+		res.status(200).json({
+			success: true,
+			canConnect,
+			message: canConnect ? "You can connect bank accounts" : "Upgrade to connect bank accounts",
+			remaining: limits[plan] - bankCount,
+			plan,
 		});
 	} catch (err) {
 		res.status(500).json({ error: err.message });

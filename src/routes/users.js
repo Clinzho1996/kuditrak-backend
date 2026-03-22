@@ -1,6 +1,7 @@
 import express from "express";
 
 import {
+	checkConnectionLimit,
 	deleteAccount,
 	getInsights,
 	getProfile,
@@ -26,6 +27,7 @@ router.put(
 // Get financial insights
 router.get("/insights", protect, getInsights);
 router.put("/profile", protect, updateProfile);
+router.get("/check-limit", protect, checkConnectionLimit);
 
 // Delete user account
 router.delete("/delete-account", protect, deleteAccount);
