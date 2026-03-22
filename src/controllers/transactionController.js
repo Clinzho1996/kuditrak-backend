@@ -321,7 +321,7 @@ export const getTransactionById = async (req, res) => {
 	}
 };
 
-// Update linkTransactionToBudget to also update budget spent
+// backend/controllers/transactionController.js
 export const linkTransactionToBudget = async (req, res) => {
 	try {
 		const { transactionId, budgetId } = req.body;
@@ -334,6 +334,13 @@ export const linkTransactionToBudget = async (req, res) => {
 		if (!transaction) {
 			return res.status(404).json({
 				error: "Transaction not found",
+			});
+		}
+
+		// Only allow expense transactions to be linked to budgets
+		if (transaction.type !== "expense") {
+			return res.status(400).json({
+				error: "Only expense transactions can be linked to budgets",
 			});
 		}
 
