@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import SavingsBucket from "../models/SavingsBucket.js";
 import Wallet from "../models/Wallet.js";
+import { checkLimits } from "../services/subscriptionService.js";
 
 // Store scheduled jobs (in production, use a job queue like Bull)
 const scheduledJobs = new Map();
@@ -98,6 +99,8 @@ const scheduleAutoSave = (bucketId, userId, frequency, amount) => {
 export const createBucket = async (req, res) => {
 	try {
 		const { name, targetAmount, frequency, autoSaveAmount } = req.body;
+		// Check if user has reached bucket limit
+		await checkLimits(req.user._id, "saving_bucket");
 
 		let wallet = await Wallet.findOne({ userId: req.user._id });
 
