@@ -20,69 +20,72 @@ export const listTransactions = async (req, res) => {
 
 // Create manual transaction
 // Update createTransaction to automatically update budget spent if category matches
+// backend/controllers/transactionController.js - Add this at the beginning of createTransaction
+
 export const createTransaction = async (req, res) => {
 	try {
 		const { amount, type, description, categoryId, date } = req.body;
 
+		console.log("=== CREATE TRANSACTION CONTROLLER ===");
+		console.log("Request body:", req.body);
+		console.log("User ID:", req.user?._id);
+
+		// Validate required fields
 		if (!amount || !type) {
+			console.log("Missing required fields");
 			return res.status(400).json({ error: "Amount and type are required" });
 		}
 
 		if (!["income", "expense"].includes(type)) {
+			console.log("Invalid type:", type);
 			return res.status(400).json({ error: "Invalid transaction type" });
 		}
 
-		console.log("Creating transaction for user:", req.user._id);
-
+		// Check user
 		if (!req.user || !req.user._id) {
+			console.log("No user found");
 			return res.status(401).json({ error: "Unauthorized: user missing" });
 		}
-		await checkLimits(req.user._id || req.user, "manual_transaction");
 
+		// Check limits
+		try {
+			await checkLimits(req.user._id, "manual_transaction");
+		} catch (limitError) {
+			console.log("Limit check failed:", limitError.message);
+			return res.status(403).json({ error: limitError.message });
+		}
+
+		// Get category
 		let categoryName = null;
-		let budgetId = null;
-
 		if (categoryId) {
+			console.log("Looking for category:", categoryId);
 			const category = await Category.findOne({
 				_id: categoryId,
 				userId: req.user._id,
 			});
 
 			if (!category) {
+				console.log("Category not found:", categoryId);
 				return res.status(400).json({ error: "Invalid category selected" });
 			}
 
 			categoryName = category.name;
-
-			// Try to find a matching budget for expense transactions
-			if (type === "expense") {
-				const budgets = await Budget.find({
-					userId: req.user._id,
-					startDate: { $lte: new Date() },
-					endDate: { $gte: new Date() },
-				});
-
-				// Find budget that matches category name (case insensitive partial match)
-				const matchingBudget = budgets.find(
-					(budget) =>
-						budget.name.toLowerCase().includes(categoryName.toLowerCase()) ||
-						categoryName.toLowerCase().includes(budget.name.toLowerCase()),
-				);
-
-				if (matchingBudget) {
-					budgetId = matchingBudget._id;
-
-					// Update budget spent
-					matchingBudget.spent = (matchingBudget.spent || 0) + Number(amount);
-					await matchingBudget.save();
-					console.log(
-						`Updated budget ${matchingBudget.name} spent to ${matchingBudget.spent}`,
-					);
-				}
-			}
+			console.log("Found category:", categoryName);
 		}
 
+		// Create transaction
 		const transactionId = `TRX-${req.user._id}-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+
+		console.log("Creating transaction with data:", {
+			userId: req.user._id,
+			amount: Number(amount),
+			type,
+			description,
+			categoryId,
+			categoryName,
+			date: date ? new Date(date) : new Date(),
+			transactionId,
+		});
 
 		const transaction = await Transaction.create({
 			userId: req.user._id,
@@ -91,16 +94,22 @@ export const createTransaction = async (req, res) => {
 			description: description || "",
 			categoryId: categoryId || null,
 			categoryName,
-			budgetId: budgetId,
 			source: "manual",
 			date: date ? new Date(date) : new Date(),
 			transactionId,
 		});
 
+		console.log("Transaction created successfully:", transaction._id);
+
 		res.status(201).json({ success: true, transaction });
 	} catch (err) {
 		console.error("CreateTransaction error:", err);
-		res.status(500).json({ error: err.message });
+		console.error("Error stack:", err.stack);
+		// Send more specific error message
+		res.status(500).json({
+			error: err.message,
+			details: process.env.NODE_ENV === "development" ? err.stack : undefined,
+		});
 	}
 };
 
