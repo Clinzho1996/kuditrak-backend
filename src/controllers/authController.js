@@ -3,8 +3,10 @@ import jwt from "jsonwebtoken";
 import BankConnection from "../models/BankConnection.js";
 import User from "../models/User.js";
 import Wallet from "../models/Wallet.js";
+
 import { sendEmail } from "../services/emailService.js";
 import { verifyFirebaseToken } from "../services/firebaseService.js";
+import { initializeDefaultCategories } from "./categoryController.js";
 
 // Generate JWT
 const generateToken = (userId) =>
@@ -42,6 +44,8 @@ export const signup = async (req, res) => {
 			email,
 			password: hashedPassword,
 		});
+
+		await initializeDefaultCategories(user._id);
 		console.log("User created with ID:", user._id);
 
 		// Create wallet automatically
@@ -298,6 +302,8 @@ export const socialAuth = async (req, res) => {
 				provider: firebase.sign_in_provider,
 				isVerified: true,
 			});
+
+			await initializeDefaultCategories(user._id);
 
 			await Wallet.create({
 				userId: user._id,
