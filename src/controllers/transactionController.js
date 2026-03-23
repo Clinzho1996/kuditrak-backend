@@ -2,6 +2,7 @@ import BankConnection from "../models/BankConnection.js";
 import Budget from "../models/Budget.js";
 import Category from "../models/Category.js";
 import Transaction from "../models/Transaction.js";
+import Wallet from "../models/Wallet.js";
 import mono from "../services/monoService.js";
 import { sendTransactionNotification } from "../services/notificationService.js";
 import { checkLimits } from "../services/subscriptionService.js";
