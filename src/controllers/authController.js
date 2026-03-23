@@ -24,15 +24,20 @@ export const signup = async (req, res) => {
 
 		// Validate input
 		if (!fullName || !email || !password) {
-			console.log("Missing required fields");
-			return res.status(400).json({ error: "All fields are required" });
+			return res.status(400).json({
+				success: false,
+				message: "Full name, email and password are required",
+				code: "MISSING_FIELDS",
+			});
 		}
 
-		console.log("Checking for existing user...");
 		const existing = await User.findOne({ email });
 		if (existing) {
-			console.log("Email already registered:", email);
-			return res.status(400).json({ error: "Email already registered" });
+			return res.status(409).json({
+				success: false,
+				message: "An account with this email already exists",
+				code: "EMAIL_ALREADY_EXISTS",
+			});
 		}
 
 		console.log("Hashing password...");
@@ -76,7 +81,11 @@ export const signup = async (req, res) => {
 	} catch (err) {
 		console.error("ERROR in signup:", err);
 		console.error("Error stack:", err.stack);
-		res.status(500).json({ error: err.message });
+		res.status(500).json({
+			success: false,
+			message: "Unable to create account. Please try again",
+			code: "SIGNUP_FAILED",
+		});
 	}
 };
 
@@ -85,11 +94,28 @@ export const confirmOtp = async (req, res) => {
 	try {
 		const { userId, otp } = req.body;
 		const user = await User.findById(userId);
-		if (!user) return res.status(404).json({ error: "User not found" });
-		if (user.isVerified)
-			return res.status(400).json({ error: "User already verified" });
+		if (!user) {
+			return res.status(404).json({
+				success: false,
+				message: "User not found",
+				code: "USER_NOT_FOUND",
+			});
+		}
+
+		if (user.isVerified) {
+			return res.status(400).json({
+				success: false,
+				message: "Account already verified",
+				code: "ALREADY_VERIFIED",
+			});
+		}
+
 		if (user.otp !== Number(otp) || Date.now() > user.otpExpires) {
-			return res.status(400).json({ error: "Invalid or expired OTP" });
+			return res.status(400).json({
+				success: false,
+				message: "Invalid or expired OTP",
+				code: "INVALID_OTP",
+			});
 		}
 
 		user.isVerified = true;
@@ -110,12 +136,20 @@ export const forgotPassword = async (req, res) => {
 		const { email } = req.body;
 
 		if (!email) {
-			return res.status(400).json({ error: "Email is required" });
+			return res.status(400).json({
+				success: false,
+				message: "Email is required",
+				code: "EMAIL_REQUIRED",
+			});
 		}
 
 		const user = await User.findOne({ email });
 		if (!user) {
-			return res.status(404).json({ error: "User not found" });
+			return res.status(404).json({
+				success: false,
+				message: "No account found with this email",
+				code: "USER_NOT_FOUND",
+			});
 		}
 
 		// Generate OTP
@@ -144,16 +178,28 @@ export const verifyResetOtp = async (req, res) => {
 		const { email, otp } = req.body;
 
 		if (!email || !otp) {
-			return res.status(400).json({ error: "Email and OTP are required" });
+			return res.status(400).json({
+				success: false,
+				message: "Email and OTP are required",
+				code: "MISSING_FIELDS",
+			});
 		}
 
 		const user = await User.findOne({ email });
 		if (!user) {
-			return res.status(404).json({ error: "User not found" });
+			return res.status(404).json({
+				success: false,
+				message: "User not found",
+				code: "USER_NOT_FOUND",
+			});
 		}
 
 		if (user.resetOtp !== Number(otp) || Date.now() > user.resetOtpExpires) {
-			return res.status(400).json({ error: "Invalid or expired OTP" });
+			return res.status(400).json({
+				success: false,
+				message: "Invalid or expired OTP",
+				code: "INVALID_OTP",
+			});
 		}
 
 		// Mark OTP as verified (important)
@@ -172,19 +218,29 @@ export const resetPassword = async (req, res) => {
 		const { email, newPassword } = req.body;
 
 		if (!email || !newPassword) {
-			return res
-				.status(400)
-				.json({ error: "Email and new password are required" });
+			return res.status(400).json({
+				success: false,
+				message: "Email and new password are required",
+				code: "MISSING_FIELDS",
+			});
 		}
 
 		const user = await User.findOne({ email });
 		if (!user) {
-			return res.status(404).json({ error: "User not found" });
+			return res.status(404).json({
+				success: false,
+				message: "User not found",
+				code: "USER_NOT_FOUND",
+			});
 		}
 
 		// Ensure OTP was verified first
 		if (!user.resetOtpVerified) {
-			return res.status(401).json({ error: "OTP verification required" });
+			return res.status(401).json({
+				success: false,
+				message: "OTP verification required before resetting password",
+				code: "OTP_NOT_VERIFIED",
+			});
 		}
 
 		const hashedPassword = await bcrypt.hash(newPassword, 10);
@@ -217,11 +273,21 @@ export const completeOnboarding = async (req, res) => {
 
 		// req.user is set by the protect middleware
 		if (!req.user || !req.user._id) {
-			return res.status(401).json({ error: "User not authenticated" });
+			return res.status(401).json({
+				success: false,
+				message: "Authentication required",
+				code: "UNAUTHORIZED",
+			});
 		}
 
 		const user = await User.findById(req.user._id);
-		if (!user) return res.status(404).json({ error: "User not found" });
+		if (!user) {
+			return res.status(404).json({
+				success: false,
+				message: "User not found",
+				code: "USER_NOT_FOUND",
+			});
+		}
 
 		user.onboarding = {
 			...user.onboarding,
@@ -268,11 +334,22 @@ export const login = async (req, res) => {
 		if (!user) return res.status(400).json({ error: "Invalid credentials" });
 
 		const isMatch = await bcrypt.compare(password, user.password);
-		if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
 
-		if (!user.isVerified)
-			return res.status(401).json({ error: "Email not verified" });
+		if (!isMatch) {
+			return res.status(401).json({
+				success: false,
+				message: "Invalid email or password",
+				code: "INVALID_CREDENTIALS",
+			});
+		}
 
+		if (!user.isVerified) {
+			return res.status(403).json({
+				success: false,
+				message: "Please verify your email before logging in",
+				code: "EMAIL_NOT_VERIFIED",
+			});
+		}
 		const token = generateToken(user._id);
 		res.status(200).json({ token, user });
 	} catch (err) {
@@ -285,7 +362,11 @@ export const socialAuth = async (req, res) => {
 		const { idToken } = req.body;
 
 		if (!idToken) {
-			return res.status(400).json({ error: "Token required" });
+			return res.status(400).json({
+				success: false,
+				message: "Authentication token is required",
+				code: "TOKEN_REQUIRED",
+			});
 		}
 
 		const decoded = await verifyFirebaseToken(idToken);
