@@ -1,6 +1,6 @@
 import Wallet from "../models/Wallet.js";
 import { sendEmail } from "./emailService.js";
-import { sendPush } from "./pushService.js";
+import { sendPush, sendPushToUser } from "./pushService.js";
 
 export const sendWeeklyBudgetAlerts = async () => {
 	const wallets = await Wallet.find().populate("userId");
@@ -19,9 +19,6 @@ export const sendWeeklyBudgetAlerts = async () => {
 		});
 	}
 };
-
-// backend/services/notificationService.js
-import { sendPushToUser } from "./firebaseService.js";
 
 // Map notification types to templates
 const NOTIFICATION_TEMPLATES = {
