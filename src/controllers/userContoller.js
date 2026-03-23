@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 import BankConnection from "../models/BankConnection.js";
 import User from "../models/User.js";
 import { generateFinancialInsights } from "../services/aiService.js";
-import { removeDeviceToken, saveDeviceToken } from "../services/pushService.js";
+import { removeDeviceToken, saveDeviceToken, sendPushToUser } from "../services/pushService.js";
 
 dotenv.config();
 
@@ -235,6 +235,31 @@ export const unregisterDeviceToken = async (req, res) => {
 		});
 	} catch (err) {
 		console.error("Unregister device token error:", err);
+		res.status(500).json({ error: err.message });
+	}
+};
+
+// backend/controllers/userController.js
+export const testPushNotification = async (req, res) => {
+	try {
+		const userId = req.user._id;
+		
+		console.log("🧪 Testing push for user:", userId);
+		
+		// Send a test notification
+		await sendPushToUser(
+			userId,
+			"🧪 Test Notification",
+			"This is a test push notification from Kuditrak!",
+			{ type: "test", timestamp: new Date().toISOString() }
+		);
+		
+		res.status(200).json({ 
+			success: true, 
+			message: "Test notification sent. Check your device!" 
+		});
+	} catch (err) {
+		console.error("Test push error:", err);
 		res.status(500).json({ error: err.message });
 	}
 };

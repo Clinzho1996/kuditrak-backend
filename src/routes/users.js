@@ -6,6 +6,7 @@ import {
 	getInsights,
 	getProfile,
 	registerDeviceToken,
+	testPushNotification,
 	unregisterDeviceToken,
 	updateProfile,
 	updateProfileImage,
@@ -30,6 +31,7 @@ router.put(
 router.get("/insights", protect, getInsights);
 router.put("/profile", protect, updateProfile);
 // backend/routes/userRoutes.js
+router.post("/test", protect, testPushNotification);
 router.post("/device-token", protect, registerDeviceToken);
 router.delete("/device-token", protect, unregisterDeviceToken);
 router.get("/check-limit", protect, checkConnectionLimit);
