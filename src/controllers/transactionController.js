@@ -3,6 +3,7 @@ import Budget from "../models/Budget.js";
 import Category from "../models/Category.js";
 import Transaction from "../models/Transaction.js";
 import mono from "../services/monoService.js";
+import { sendTransactionNotification } from "../services/notificationService.js";
 import { checkLimits } from "../services/subscriptionService.js";
 
 // List all transactions
@@ -99,6 +100,14 @@ export const createTransaction = async (req, res) => {
 			transactionId,
 		});
 
+		const wallet = await Wallet.findOne({ userId: req.user._id });
+
+		await sendTransactionNotification(
+			req.user._id,
+			amount,
+			wallet.balance,
+			type,
+		);
 		console.log("Transaction created successfully:", transaction._id);
 
 		res.status(201).json({ success: true, transaction });

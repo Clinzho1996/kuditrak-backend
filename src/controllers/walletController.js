@@ -5,6 +5,10 @@ import Transaction from "../models/Transaction.js";
 import Wallet from "../models/Wallet.js";
 import { initiatePayout } from "../services/paymentGateway.js";
 
+import {
+	sendTopUpNotification,
+	sendWithdrawalNotification,
+} from "../services/notificationService.js";
 import { createTopUp } from "../services/paymentGateway.js";
 
 // backend/controllers/walletController.js
@@ -81,6 +85,8 @@ export const verifyWalletTopUp = async (req, res) => {
 		}
 
 		const wallet = await Wallet.findOne({ userId: transaction.userId });
+
+		await sendTopUpNotification(req.user._id, amount, wallet.balance);
 
 		if (!wallet) {
 			console.error("Wallet not found for user:", transaction.userId);
@@ -316,6 +322,14 @@ export const withdrawToBank = async (req, res) => {
 			],
 			{ session },
 		);
+
+		// After withdrawal
+		await sendWithdrawalNotification(req.user._id, amount, wallet.balance);
+
+		// Check if balance is low (less than 10% of average spending or threshold)
+		if (wallet.balance < 10000) {
+			await sendLowBalanceNotification(req.user._id, wallet.balance);
+		}
 
 		await session.commitTransaction();
 		session.endSession();

@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import SavingsBucket from "../models/SavingsBucket.js";
 import Wallet from "../models/Wallet.js";
+import { sendSavingNotification } from "../services/notificationService.js";
 import { checkLimits } from "../services/subscriptionService.js";
 
 // Store scheduled jobs (in production, use a job queue like Bull)
@@ -137,6 +138,14 @@ export const createBucket = async (req, res) => {
 			);
 		}
 
+		await sendSavingNotification(
+			req.user._id,
+			bucket.name,
+			0,
+			bucket.targetAmount,
+			"created",
+		);
+
 		res.status(201).json(bucket);
 	} catch (err) {
 		console.error("Create bucket error:", err);
@@ -263,6 +272,14 @@ export const deleteBucket = async (req, res) => {
 			userId: req.user._id,
 		});
 
+		await sendSavingNotification(
+			req.user._id,
+			bucket.name,
+			0,
+			bucket.targetAmount,
+			"deleted",
+		);
+
 		if (!deleted) {
 			return res.status(404).json({ error: "Bucket not found" });
 		}
@@ -324,6 +341,15 @@ export const creditBucket = async (req, res) => {
 		bucket.currentAmount += amount;
 		await bucket.save();
 
+		const isCompleted = bucket.currentAmount >= bucket.targetAmount;
+
+		await sendSavingNotification(
+			req.user._id,
+			bucket.name,
+			bucket.currentAmount,
+			bucket.targetAmount,
+			isCompleted ? "completed" : "updated",
+		);
 		// Get the updated wallet to ensure we have the latest balance
 		const updatedWallet = await Wallet.findOne({ userId: req.user._id });
 
