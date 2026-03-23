@@ -49,6 +49,7 @@ export const topUpWallet = async (req, res) => {
 };
 
 // backend/controllers/walletController.js
+// backend/controllers/walletController.js
 export const verifyWalletTopUp = async (req, res) => {
 	try {
 		const reference =
@@ -86,8 +87,6 @@ export const verifyWalletTopUp = async (req, res) => {
 
 		const wallet = await Wallet.findOne({ userId: transaction.userId });
 
-		await sendTopUpNotification(req.user._id, amount, wallet.balance);
-
 		if (!wallet) {
 			console.error("Wallet not found for user:", transaction.userId);
 			return res.redirect("kuditrak://payment/failed?error=wallet_not_found");
@@ -112,6 +111,14 @@ export const verifyWalletTopUp = async (req, res) => {
 		console.log(
 			`✅ Wallet funded: +₦${amount}, New balance: ₦${wallet.balance}`,
 		);
+
+		// Send notification AFTER wallet is updated, using userId from transaction
+		try {
+			await sendTopUpNotification(transaction.userId, amount, wallet.balance);
+		} catch (notifError) {
+			console.error("Notification error:", notifError);
+			// Don't fail the redirect if notification fails
+		}
 
 		// Redirect to app deep link
 		const appDeepLink = `kuditrak://payment/success?reference=${reference}&amount=${amount}`;
