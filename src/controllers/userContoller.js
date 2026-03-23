@@ -1,8 +1,8 @@
 import { v2 as cloudinary } from "cloudinary";
 import dotenv from "dotenv";
+import BankConnection from "../models/BankConnection.js";
 import User from "../models/User.js";
 import { generateFinancialInsights } from "../services/aiService.js";
-import BankConnection from "../models/BankConnection.js";
 import { removeDeviceToken, saveDeviceToken } from "../services/pushService.js";
 
 dotenv.config();
@@ -160,20 +160,25 @@ export const checkConnectionLimit = async (req, res) => {
 		const userId = req.user._id;
 		const user = await User.findById(userId);
 		const plan = user.subscription?.plan || "free";
-		
+
 		const limits = {
 			free: 0,
 			basic: 3,
 			pro: Infinity,
 		};
-		
-		const bankCount = await BankConnection.countDocuments({ userId, status: "Active" });
+
+		const bankCount = await BankConnection.countDocuments({
+			userId,
+			status: "Active",
+		});
 		const canConnect = bankCount < limits[plan];
-		
+
 		res.status(200).json({
 			success: true,
 			canConnect,
-			message: canConnect ? "You can connect bank accounts" : "Upgrade to connect bank accounts",
+			message: canConnect
+				? "You can connect bank accounts"
+				: "Upgrade to connect bank accounts",
 			remaining: limits[plan] - bankCount,
 			plan,
 		});
@@ -184,38 +189,52 @@ export const checkConnectionLimit = async (req, res) => {
 
 export const registerDeviceToken = async (req, res) => {
 	try {
-		const { token, deviceType } = req.body;
-		
-		if (!token || !deviceType) {
-			return res.status(400).json({ error: "Token and deviceType are required" });
+		const { userId, token, deviceType } = req.body;
+
+		// Verify the authenticated user matches the userId
+		if (req.user._id.toString() !== userId) {
+			return res.status(403).json({ error: "Unauthorized" });
 		}
-		
-		await saveDeviceToken(req.user._id, token, deviceType);
-		
-		res.status(200).json({ 
-			success: true, 
-			message: "Device token registered successfully" 
+
+		if (!token || !deviceType) {
+			return res
+				.status(400)
+				.json({ error: "Token and deviceType are required" });
+		}
+
+		await saveDeviceToken(userId, token, deviceType);
+
+		res.status(200).json({
+			success: true,
+			message: "Device token registered successfully",
 		});
 	} catch (err) {
+		console.error("Register device token error:", err);
 		res.status(500).json({ error: err.message });
 	}
 };
 
 export const unregisterDeviceToken = async (req, res) => {
 	try {
-		const { token } = req.body;
-		
+		const { userId, token } = req.body;
+
+		// Verify the authenticated user matches the userId
+		if (req.user._id.toString() !== userId) {
+			return res.status(403).json({ error: "Unauthorized" });
+		}
+
 		if (!token) {
 			return res.status(400).json({ error: "Token is required" });
 		}
-		
-		await removeDeviceToken(req.user._id, token);
-		
-		res.status(200).json({ 
-			success: true, 
-			message: "Device token unregistered successfully" 
+
+		await removeDeviceToken(userId, token);
+
+		res.status(200).json({
+			success: true,
+			message: "Device token unregistered successfully",
 		});
 	} catch (err) {
+		console.error("Unregister device token error:", err);
 		res.status(500).json({ error: err.message });
 	}
 };
