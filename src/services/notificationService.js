@@ -1,24 +1,5 @@
-import Wallet from "../models/Wallet.js";
-import { sendEmail } from "./emailService.js";
-import { sendPush, sendPushToUser } from "./pushService.js";
-
-export const sendWeeklyBudgetAlerts = async () => {
-	const wallets = await Wallet.find().populate("userId");
-
-	for (const wallet of wallets) {
-		const user = wallet.userId;
-		if (!user) continue;
-
-		const message = `Hello ${user.fullName}, your available balance is ₦${wallet.available}. Check your budgets!`;
-		if (user.pushToken)
-			await sendPush(user.pushToken, "Weekly Budget Alert", message);
-		await sendEmail({
-			to: user.email,
-			subject: "Weekly Budget Reminder",
-			html: `<p>${message}</p>`,
-		});
-	}
-};
+// backend/services/notificationTemplates.js (or update your existing file)
+import { sendPushToUser } from "./pushService.js";
 
 // Map notification types to templates
 const NOTIFICATION_TEMPLATES = {
@@ -93,7 +74,7 @@ const NOTIFICATION_TEMPLATES = {
 const formatNotification = (template, data) => {
 	let message = template.body;
 	Object.keys(data).forEach((key) => {
-		message = message.replace(`{${key}}`, data[key]);
+		message = message.replace(new RegExp(`{${key}}`, "g"), data[key]);
 	});
 	return message;
 };
@@ -105,19 +86,31 @@ export const sendBudgetNearingLimitNotification = async (
 	percentage,
 	remaining,
 	amount,
+	budgetId,
 ) => {
-	const template = NOTIFICATION_TEMPLATES.BUDGET_NEARING_LIMIT;
-	const body = formatNotification(template, {
-		percentage,
-		budgetName,
-		remaining: remaining.toLocaleString(),
-	});
+	try {
+		const template = NOTIFICATION_TEMPLATES.BUDGET_NEARING_LIMIT;
+		const body = formatNotification(template, {
+			percentage: Math.round(percentage),
+			budgetName,
+			remaining: remaining.toLocaleString(),
+		});
 
-	await sendPushToUser(userId, template.title, body, {
-		type: template.type,
-		budgetId: budgetId,
-		percentage: percentage.toString(),
-	});
+		console.log(`Sending budget nearing limit notification to ${userId}`);
+
+		const result = await sendPushToUser(userId, template.title, body, {
+			type: template.type,
+			budgetId: budgetId,
+			percentage: percentage.toString(),
+			budgetName: budgetName,
+		});
+
+		console.log("Budget notification result:", result);
+		return result;
+	} catch (error) {
+		console.error("Error sending budget nearing limit notification:", error);
+		throw error;
+	}
 };
 
 // Send budget limit reached notification
@@ -125,17 +118,30 @@ export const sendBudgetLimitReachedNotification = async (
 	userId,
 	budgetName,
 	amount,
+	budgetId,
 ) => {
-	const template = NOTIFICATION_TEMPLATES.BUDGET_LIMIT_REACHED;
-	const body = formatNotification(template, {
-		budgetName,
-		amount: amount.toLocaleString(),
-	});
+	try {
+		const template = NOTIFICATION_TEMPLATES.BUDGET_LIMIT_REACHED;
+		const body = formatNotification(template, {
+			budgetName,
+			amount: amount.toLocaleString(),
+		});
 
-	await sendPushToUser(userId, template.title, body, {
-		type: template.type,
-		budgetName,
-	});
+		console.log(`Sending budget limit reached notification to ${userId}`);
+
+		const result = await sendPushToUser(userId, template.title, body, {
+			type: template.type,
+			budgetId: budgetId,
+			budgetName: budgetName,
+			amount: amount.toString(),
+		});
+
+		console.log("Budget limit notification result:", result);
+		return result;
+	} catch (error) {
+		console.error("Error sending budget limit reached notification:", error);
+		throw error;
+	}
 };
 
 // Send transaction notification
@@ -145,19 +151,31 @@ export const sendTransactionNotification = async (
 	balance,
 	type,
 ) => {
-	const template =
-		type === "credit"
-			? NOTIFICATION_TEMPLATES.TRANSACTION_CREDIT
-			: NOTIFICATION_TEMPLATES.TRANSACTION_DEBIT;
-	const body = formatNotification(template, {
-		amount: amount.toLocaleString(),
-		balance: balance.toLocaleString(),
-	});
+	try {
+		const template =
+			type === "credit"
+				? NOTIFICATION_TEMPLATES.TRANSACTION_CREDIT
+				: NOTIFICATION_TEMPLATES.TRANSACTION_DEBIT;
 
-	await sendPushToUser(userId, template.title, body, {
-		type: template.type,
-		amount: amount.toString(),
-	});
+		const body = formatNotification(template, {
+			amount: amount.toLocaleString(),
+			balance: balance.toLocaleString(),
+		});
+
+		console.log(`Sending ${type} transaction notification to ${userId}`);
+
+		const result = await sendPushToUser(userId, template.title, body, {
+			type: template.type,
+			amount: amount.toString(),
+			transactionType: type,
+		});
+
+		console.log("Transaction notification result:", result);
+		return result;
+	} catch (error) {
+		console.error("Error sending transaction notification:", error);
+		throw error;
+	}
 };
 
 // Send saving goal notification
@@ -168,90 +186,129 @@ export const sendSavingNotification = async (
 	targetAmount,
 	action,
 ) => {
-	let template;
-	if (action === "created") {
-		template = NOTIFICATION_TEMPLATES.SAVING_CREATED;
-		const body = formatNotification(template, {
-			bucketName,
-			targetAmount: targetAmount.toLocaleString(),
-		});
-		await sendPushToUser(userId, template.title, body, {
+	try {
+		let template;
+		let body;
+		let extraData = {};
+
+		if (action === "created") {
+			template = NOTIFICATION_TEMPLATES.SAVING_CREATED;
+			body = formatNotification(template, {
+				bucketName,
+				targetAmount: targetAmount.toLocaleString(),
+			});
+			extraData = { bucketName, action: "created" };
+		} else if (action === "deleted") {
+			template = NOTIFICATION_TEMPLATES.SAVING_DELETED;
+			body = formatNotification(template, { bucketName });
+			extraData = { bucketName, action: "deleted" };
+		} else if (action === "completed") {
+			template = NOTIFICATION_TEMPLATES.SAVING_COMPLETED;
+			body = formatNotification(template, {
+				bucketName,
+				targetAmount: targetAmount.toLocaleString(),
+			});
+			extraData = { bucketName, action: "completed" };
+		} else {
+			const progress = Math.round((currentAmount / targetAmount) * 100);
+			template = NOTIFICATION_TEMPLATES.SAVING_UPDATED;
+			body = formatNotification(template, {
+				bucketName,
+				progress,
+				currentAmount: currentAmount.toLocaleString(),
+				targetAmount: targetAmount.toLocaleString(),
+			});
+			extraData = {
+				bucketName,
+				action: "updated",
+				progress: progress.toString(),
+			};
+		}
+
+		console.log(`Sending saving notification (${action}) to ${userId}`);
+
+		const result = await sendPushToUser(userId, template.title, body, {
 			type: template.type,
-			bucketName,
+			...extraData,
 		});
-	} else if (action === "deleted") {
-		template = NOTIFICATION_TEMPLATES.SAVING_DELETED;
-		const body = formatNotification(template, { bucketName });
-		await sendPushToUser(userId, template.title, body, {
-			type: template.type,
-			bucketName,
-		});
-	} else if (action === "completed") {
-		template = NOTIFICATION_TEMPLATES.SAVING_COMPLETED;
-		const body = formatNotification(template, {
-			bucketName,
-			targetAmount: targetAmount.toLocaleString(),
-		});
-		await sendPushToUser(userId, template.title, body, {
-			type: template.type,
-			bucketName,
-		});
-	} else {
-		const progress = Math.round((currentAmount / targetAmount) * 100);
-		template = NOTIFICATION_TEMPLATES.SAVING_UPDATED;
-		const body = formatNotification(template, {
-			bucketName,
-			progress,
-			currentAmount: currentAmount.toLocaleString(),
-			targetAmount: targetAmount.toLocaleString(),
-		});
-		await sendPushToUser(userId, template.title, body, {
-			type: template.type,
-			bucketName,
-			progress: progress.toString(),
-		});
+
+		console.log("Saving notification result:", result);
+		return result;
+	} catch (error) {
+		console.error("Error sending saving notification:", error);
+		throw error;
 	}
 };
 
 // Send wallet top-up notification
 export const sendTopUpNotification = async (userId, amount, balance) => {
-	const template = NOTIFICATION_TEMPLATES.WALLET_TOPUP_SUCCESS;
-	const body = formatNotification(template, {
-		amount: amount.toLocaleString(),
-		balance: balance.toLocaleString(),
-	});
+	try {
+		const template = NOTIFICATION_TEMPLATES.WALLET_TOPUP_SUCCESS;
+		const body = formatNotification(template, {
+			amount: amount.toLocaleString(),
+			balance: balance.toLocaleString(),
+		});
 
-	await sendPushToUser(userId, template.title, body, {
-		type: template.type,
-		amount: amount.toString(),
-	});
+		console.log(`Sending top-up notification to ${userId}`);
+
+		const result = await sendPushToUser(userId, template.title, body, {
+			type: template.type,
+			amount: amount.toString(),
+		});
+
+		console.log("Top-up notification result:", result);
+		return result;
+	} catch (error) {
+		console.error("Error sending top-up notification:", error);
+		throw error;
+	}
 };
 
 // Send withdrawal notification
 export const sendWithdrawalNotification = async (userId, amount, balance) => {
-	const template = NOTIFICATION_TEMPLATES.WITHDRAWAL_SUCCESS;
-	const body = formatNotification(template, {
-		amount: amount.toLocaleString(),
-		balance: balance.toLocaleString(),
-	});
+	try {
+		const template = NOTIFICATION_TEMPLATES.WITHDRAWAL_SUCCESS;
+		const body = formatNotification(template, {
+			amount: amount.toLocaleString(),
+			balance: balance.toLocaleString(),
+		});
 
-	await sendPushToUser(userId, template.title, body, {
-		type: template.type,
-		amount: amount.toString(),
-	});
+		console.log(`Sending withdrawal notification to ${userId}`);
+
+		const result = await sendPushToUser(userId, template.title, body, {
+			type: template.type,
+			amount: amount.toString(),
+		});
+
+		console.log("Withdrawal notification result:", result);
+		return result;
+	} catch (error) {
+		console.error("Error sending withdrawal notification:", error);
+		throw error;
+	}
 };
 
 // Send low balance notification
 export const sendLowBalanceNotification = async (userId, balance) => {
-	const template = NOTIFICATION_TEMPLATES.INSUFFICIENT_BALANCE;
-	const body = formatNotification(template, {
-		balance: balance.toLocaleString(),
-	});
+	try {
+		const template = NOTIFICATION_TEMPLATES.INSUFFICIENT_BALANCE;
+		const body = formatNotification(template, {
+			balance: balance.toLocaleString(),
+		});
 
-	await sendPushToUser(userId, template.title, body, {
-		type: template.type,
-		balance: balance.toString(),
-	});
+		console.log(`Sending low balance notification to ${userId}`);
+
+		const result = await sendPushToUser(userId, template.title, body, {
+			type: template.type,
+			balance: balance.toString(),
+		});
+
+		console.log("Low balance notification result:", result);
+		return result;
+	} catch (error) {
+		console.error("Error sending low balance notification:", error);
+		throw error;
+	}
 };
 
 // Send subscription notification
@@ -261,24 +318,38 @@ export const sendSubscriptionNotification = async (
 	daysLeft,
 	action,
 ) => {
-	let template;
-	if (action === "expiring") {
-		template = NOTIFICATION_TEMPLATES.SUBSCRIPTION_EXPIRING;
-		const body = formatNotification(template, { plan, days: daysLeft });
-		await sendPushToUser(userId, template.title, body, {
+	try {
+		let template;
+		let body;
+
+		if (action === "expiring") {
+			template = NOTIFICATION_TEMPLATES.SUBSCRIPTION_EXPIRING;
+			body = formatNotification(template, {
+				plan,
+				days: daysLeft,
+			});
+		} else if (action === "renewed") {
+			template = NOTIFICATION_TEMPLATES.SUBSCRIPTION_RENEWED;
+			body = formatNotification(template, {
+				plan,
+				nextBillingDate: daysLeft,
+			});
+		} else {
+			return;
+		}
+
+		console.log(`Sending subscription notification (${action}) to ${userId}`);
+
+		const result = await sendPushToUser(userId, template.title, body, {
 			type: template.type,
 			plan,
-			daysLeft: daysLeft.toString(),
+			action,
 		});
-	} else if (action === "renewed") {
-		template = NOTIFICATION_TEMPLATES.SUBSCRIPTION_RENEWED;
-		const body = formatNotification(template, {
-			plan,
-			nextBillingDate: daysLeft,
-		});
-		await sendPushToUser(userId, template.title, body, {
-			type: template.type,
-			plan,
-		});
+
+		console.log("Subscription notification result:", result);
+		return result;
+	} catch (error) {
+		console.error("Error sending subscription notification:", error);
+		throw error;
 	}
 };

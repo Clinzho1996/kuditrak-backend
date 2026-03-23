@@ -1,92 +1,18 @@
 // backend/services/pushService.js
 import { Expo } from "expo-server-sdk";
 import User from "../models/User.js";
-import firebaseApp from "./firebaseService.js";
 
 // Create a new Expo SDK client
 const expo = new Expo();
 
-// backend/services/pushService.js
-export const saveDeviceToken = async (userId, token, deviceType) => {
-	try {
-		console.log("Saving device token for user:", userId);
-		console.log("Token:", token);
-		console.log("Device type:", deviceType);
-
-		// Convert userId to ObjectId if it's a string
-		const userObjectId =
-			typeof userId === "string" ? new mongoose.Types.ObjectId(userId) : userId;
-
-		const user = await User.findById(userObjectId);
-
-		if (!user) {
-			console.log("User not found:", userId);
-			throw new Error("User not found");
-		}
-
-		console.log("User found:", user.email);
-		console.log("Current device tokens:", user.deviceTokens);
-
-		// Initialize deviceTokens array if it doesn't exist
-		if (!user.deviceTokens) {
-			user.deviceTokens = [];
-		}
-
-		// Check if token already exists
-		const existingTokenIndex = user.deviceTokens.findIndex(
-			(t) => t.token === token,
-		);
-
-		if (existingTokenIndex !== -1) {
-			// Update existing token
-			user.deviceTokens[existingTokenIndex].lastUsed = new Date();
-			user.deviceTokens[existingTokenIndex].deviceType = deviceType;
-			console.log("Updating existing token");
-		} else {
-			// Add new token
-			user.deviceTokens.push({
-				token,
-				deviceType,
-				lastUsed: new Date(),
-				createdAt: new Date(),
-			});
-			console.log("Adding new token");
-		}
-
-		await user.save();
-		console.log("User saved successfully");
-		console.log("Updated device tokens:", user.deviceTokens);
-
-		return user;
-	} catch (error) {
-		console.error("Error saving device token:", error);
-		throw error;
-	}
-};
-
-export const removeDeviceToken = async (userId, token) => {
-	try {
-		const result = await User.findByIdAndUpdate(
-			userId,
-			{ $pull: { deviceTokens: { token } } },
-			{ new: true },
-		);
-
-		if (result) {
-			console.log(`✅ Device token removed for user ${userId}`);
-		}
-		return result;
-	} catch (error) {
-		console.error("Error removing device token:", error);
-		throw error;
-	}
-};
-
+// Send push notification to a specific user
 export const sendPushToUser = async (userId, title, body, data = {}) => {
 	try {
-		console.log(`📱 Looking for user: ${userId}`);
+		console.log(`📱 Sending push to user: ${userId}`);
+		console.log(`Title: ${title}`);
+		console.log(`Body: ${body}`);
 
-		// Find user and populate device tokens
+		// Find user with device tokens
 		const user = await User.findById(userId).select(
 			"deviceTokens email fullName",
 		);
@@ -96,37 +22,29 @@ export const sendPushToUser = async (userId, title, body, data = {}) => {
 			return { success: false, message: "User not found" };
 		}
 
-		console.log(`User found: ${user.email}`);
-		console.log(`Device tokens count: ${user.deviceTokens?.length || 0}`);
-
 		if (!user.deviceTokens || user.deviceTokens.length === 0) {
-			console.log(`❌ No device tokens for user: ${userId}`);
-
-			// Log the actual user data for debugging
-			const rawUser = await User.findById(userId);
-			console.log("Raw user deviceTokens:", rawUser?.deviceTokens);
-
-			return { success: false, message: "No device tokens found" };
+			console.log(`❌ No device tokens for user: ${user.email}`);
+			return { success: false, message: "No device tokens" };
 		}
 
-		// Log all tokens
-		user.deviceTokens.forEach((token, index) => {
-			console.log(`Token ${index + 1}:`, {
-				token: token.token,
-				type: token.deviceType,
-				isExpoToken: Expo.isExpoPushToken(token.token),
-			});
-		});
+		console.log(
+			`✅ Found ${user.deviceTokens.length} device token(s) for ${user.email}`,
+		);
 
 		const messages = [];
+		const validTokens = [];
 
 		// Prepare messages for each valid token
 		for (const deviceToken of user.deviceTokens) {
+			console.log(`Checking token: ${deviceToken.token.substring(0, 30)}...`);
+
 			// Check if it's a valid Expo push token
 			if (!Expo.isExpoPushToken(deviceToken.token)) {
 				console.log(`❌ Invalid Expo push token: ${deviceToken.token}`);
 				continue;
 			}
+
+			validTokens.push(deviceToken.token);
 
 			messages.push({
 				to: deviceToken.token,
@@ -139,59 +57,56 @@ export const sendPushToUser = async (userId, title, body, data = {}) => {
 					timestamp: new Date().toISOString(),
 				},
 				priority: "high",
-				_displayInForeground: true,
 			});
 		}
 
 		if (messages.length === 0) {
 			console.log("❌ No valid Expo push tokens found");
-			return { success: false, message: "No valid Expo push tokens" };
+			return { success: false, message: "No valid tokens" };
 		}
 
 		console.log(`📤 Sending ${messages.length} push notification(s)...`);
 
-		// Send notifications in chunks (Expo supports up to 100 per request)
+		// Send notifications in chunks
 		const chunks = expo.chunkPushNotifications(messages);
 		const tickets = [];
+		const errors = [];
 
 		for (const chunk of chunks) {
 			try {
 				const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
-				console.log("Ticket chunk result:", ticketChunk);
 				tickets.push(...ticketChunk);
+
+				// Check for errors in tickets
+				ticketChunk.forEach((ticket, index) => {
+					if (ticket.status === "error") {
+						console.log(`Ticket error: ${ticket.message}`);
+						errors.push({
+							token: messages[index]?.to,
+							error: ticket.message,
+						});
+
+						// If token is invalid, remove it from database
+						if (ticket.message === "DeviceNotRegistered") {
+							console.log(`Removing invalid token: ${messages[index]?.to}`);
+							User.findByIdAndUpdate(user._id, {
+								$pull: { deviceTokens: { token: messages[index]?.to } },
+							});
+						}
+					}
+				});
 			} catch (error) {
 				console.error("Error sending chunk:", error);
-			}
-		}
-
-		// Check for errors in tickets and clean up invalid tokens
-		const errors = [];
-		const receipts = [];
-
-		for (const ticket of tickets) {
-			if (ticket.status === "error") {
-				errors.push(ticket);
-				console.log("Ticket error:", ticket);
-
-				// If token is invalid, remove it from database
-				if (ticket.message === "DeviceNotRegistered" && ticket.details?.error) {
-					console.log(`Removing invalid token: ${ticket.details.error}`);
-					await User.findByIdAndUpdate(user._id, {
-						$pull: { deviceTokens: { token: ticket.details.error } },
-					});
-				}
-			} else if (ticket.status === "ok") {
-				receipts.push(ticket.id);
+				errors.push({ error: error.message });
 			}
 		}
 
 		console.log(
-			`✅ Push notifications sent: ${messages.length - errors.length} successful, ${errors.length} failed`,
+			`✅ Push sent: ${messages.length - errors.length} successful, ${errors.length} failed`,
 		);
 
 		return {
 			success: true,
-			tickets,
 			sent: messages.length - errors.length,
 			failed: errors.length,
 			errors: errors.length > 0 ? errors : undefined,
@@ -202,59 +117,113 @@ export const sendPushToUser = async (userId, title, body, data = {}) => {
 	}
 };
 
-// Function to get user's device tokens (for debugging)
-export const getUserDeviceTokens = async (userId) => {
+// Save device token for user
+export const saveDeviceToken = async (userId, token, deviceType) => {
 	try {
-		const user = await User.findById(userId).select(
-			"deviceTokens email fullName",
+		console.log(`💾 Saving device token for user: ${userId}`);
+
+		const userObjectId =
+			typeof userId === "string" ? new mongoose.Types.ObjectId(userId) : userId;
+
+		// Remove this token from any other user first (cleanup)
+		await User.updateMany(
+			{ "deviceTokens.token": token },
+			{ $pull: { deviceTokens: { token: token } } },
 		);
-		return {
-			user: user ? { email: user.email, fullName: user.fullName } : null,
-			deviceTokens: user?.deviceTokens || [],
-			count: user?.deviceTokens?.length || 0,
-		};
+
+		// Add token to current user
+		const user = await User.findById(userObjectId);
+
+		if (!user) {
+			throw new Error("User not found");
+		}
+
+		if (!user.deviceTokens) {
+			user.deviceTokens = [];
+		}
+
+		// Check if token already exists for this user
+		const existingToken = user.deviceTokens.find((t) => t.token === token);
+
+		if (existingToken) {
+			existingToken.lastUsed = new Date();
+			existingToken.deviceType = deviceType;
+		} else {
+			user.deviceTokens.push({
+				token,
+				deviceType,
+				lastUsed: new Date(),
+				createdAt: new Date(),
+			});
+		}
+
+		await user.save();
+		console.log(`✅ Device token saved for ${user.email}`);
+
+		return user;
 	} catch (error) {
-		console.error("Error getting device tokens:", error);
+		console.error("Error saving device token:", error);
 		throw error;
 	}
 };
-/**
- * Send push notification to a single token (legacy)
- */
-export const sendPush = async (token, title, body, data = {}) => {
+
+// Remove device token
+export const removeDeviceToken = async (userId, token) => {
 	try {
-		if (!firebaseApp) {
-			console.warn("Firebase not initialized. Push skipped.");
-			return;
-		}
+		const result = await User.findByIdAndUpdate(
+			userId,
+			{ $pull: { deviceTokens: { token: token } } },
+			{ new: true },
+		);
 
-		const message = {
-			token,
-			notification: { title, body },
-			data,
-			apns: {
-				payload: {
-					aps: {
-						sound: "default",
-						badge: 1,
-					},
-				},
-			},
-			android: {
-				priority: "high",
-				notification: {
-					sound: "default",
-					channelId: "default",
-				},
-			},
-		};
-
-		const response = await admin.messaging().send(message);
-		console.log(`Push sent to ${token}`);
-		return response;
-	} catch (err) {
-		console.error("Push notification error:", err.message);
+		console.log(`✅ Device token removed for user ${userId}`);
+		return result;
+	} catch (error) {
+		console.error("Error removing device token:", error);
+		throw error;
 	}
 };
 
-export default firebaseApp;
+// Remove all device tokens for a user
+export const removeAllDeviceTokens = async (userId) => {
+	try {
+		const result = await User.findByIdAndUpdate(
+			userId,
+			{ $set: { deviceTokens: [] } },
+			{ new: true },
+		);
+
+		console.log(`✅ All device tokens removed for user ${userId}`);
+		return result;
+	} catch (error) {
+		console.error("Error removing all device tokens:", error);
+		throw error;
+	}
+};
+
+// Legacy sendPush function (keep for backward compatibility)
+export const sendPush = async (pushToken, title, body, data = {}) => {
+	try {
+		if (!Expo.isExpoPushToken(pushToken)) {
+			console.error(`Invalid push token: ${pushToken}`);
+			return { success: false, message: "Invalid push token" };
+		}
+
+		const message = {
+			to: pushToken,
+			sound: "default",
+			title: title,
+			body: body,
+			data: data,
+			priority: "high",
+		};
+
+		const ticket = await expo.sendPushNotificationsAsync([message]);
+		console.log("Push sent:", ticket);
+
+		return { success: true, ticket: ticket[0] };
+	} catch (error) {
+		console.error("Error sending push:", error);
+		throw error;
+	}
+};
