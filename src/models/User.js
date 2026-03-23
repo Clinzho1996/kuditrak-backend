@@ -69,6 +69,14 @@ const userSchema = new mongoose.Schema({
 			default: "active",
 		},
 	},
+	deviceTokens: [
+		{
+			token: { type: String, required: true },
+			deviceType: { type: String, enum: ["ios", "android"], required: true },
+			lastUsed: { type: Date, default: Date.now },
+			createdAt: { type: Date, default: Date.now },
+		},
+	],
 
 	// User budgets
 	budgets: [

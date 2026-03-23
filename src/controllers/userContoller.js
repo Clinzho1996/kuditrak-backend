@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import User from "../models/User.js";
 import { generateFinancialInsights } from "../services/aiService.js";
 import BankConnection from "../models/BankConnection.js";
+import { removeDeviceToken, saveDeviceToken } from "../services/pushService.js";
 
 dotenv.config();
 
@@ -175,6 +176,44 @@ export const checkConnectionLimit = async (req, res) => {
 			message: canConnect ? "You can connect bank accounts" : "Upgrade to connect bank accounts",
 			remaining: limits[plan] - bankCount,
 			plan,
+		});
+	} catch (err) {
+		res.status(500).json({ error: err.message });
+	}
+};
+
+export const registerDeviceToken = async (req, res) => {
+	try {
+		const { token, deviceType } = req.body;
+		
+		if (!token || !deviceType) {
+			return res.status(400).json({ error: "Token and deviceType are required" });
+		}
+		
+		await saveDeviceToken(req.user._id, token, deviceType);
+		
+		res.status(200).json({ 
+			success: true, 
+			message: "Device token registered successfully" 
+		});
+	} catch (err) {
+		res.status(500).json({ error: err.message });
+	}
+};
+
+export const unregisterDeviceToken = async (req, res) => {
+	try {
+		const { token } = req.body;
+		
+		if (!token) {
+			return res.status(400).json({ error: "Token is required" });
+		}
+		
+		await removeDeviceToken(req.user._id, token);
+		
+		res.status(200).json({ 
+			success: true, 
+			message: "Device token unregistered successfully" 
 		});
 	} catch (err) {
 		res.status(500).json({ error: err.message });
