@@ -1,11 +1,13 @@
 import dotenv from "dotenv";
 import express from "express";
 import mongoose from "mongoose";
-import monoWebhookRouter from "./controllers/monoWebhook.js";
 import "./cron.js";
 import { errorMiddleware } from "./middleware/errorMiddleware.js";
 import authRoutes from "./routes/auth.js";
-import bankRoutes from "./routes/banks.js";
+import {
+	default as bankRoutes,
+	default as monoWebhookRoutes,
+} from "./routes/banks.js";
 import budgetRoutes from "./routes/budget.js";
 import categoryRoutes from "./routes/categoryRoutes.js";
 import insightRoutes from "./routes/insight.js";
@@ -31,7 +33,7 @@ app.use("/api/budgets", budgetRoutes);
 app.use("/api/insights", insightRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/account", bankRoutes);
-app.use("/api", monoWebhookRouter);
+app.use("/api/mono", monoWebhookRoutes);
 app.use("/api/subscription", subscriptionRoutes);
 
 // Error handler

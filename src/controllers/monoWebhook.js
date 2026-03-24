@@ -1,112 +1,68 @@
-// routes/monoWebhook.js
-import express from "express";
+// controllers/monoWebhookController.js
 import BankConnection from "../models/BankConnection.js";
-import Transaction from "../models/Transaction.js";
-import { pushBudgetAlerts } from "../services/analyticsService.js";
+import User from "../models/User.js";
 
-const router = express.Router();
-
-// Mono webhook endpoint
-router.post("/mono/webhook", async (req, res) => {
+export const handleMonoWebhook = async (req, res) => {
 	try {
-		console.log("Raw body type:", typeof req.body); // should be 'object'
-		console.log("Raw body:", req.body);
+		const event = req.body;
 
-		const event = req.body.event || req.body.type || req.body.payload;
-		if (!event || !event.data) {
-			return res.status(400).json({ error: "Invalid Mono webhook payload" });
+		console.log("Mono webhook received:", event);
+
+		// Example event structure
+		// event.type = "ACCOUNT_LINKED"
+		// event.data.account.id = "69c2b36cec13bf687b14c4c9"
+		// event.data.customer.id = "69c27eeafd757da78723da46"
+		// event.data.account.name, account_number, institution, etc.
+
+		if (!event.type || !event.data) {
+			return res
+				.status(400)
+				.json({ success: false, error: "Invalid webhook payload" });
 		}
 
-		const eventType = event.event;
-		console.log("Mono webhook event:", eventType);
+		if (event.type === "ACCOUNT_LINKED") {
+			const { account, customer } = event.data;
 
-		// 1. Handle account_connected
-		if (eventType === "mono.events.account_connected") {
-			const accData = event.data;
-			await BankConnection.updateOne(
-				{ monoAccountId: accData.id },
-				{
-					userId: accData.userId,
-					monoCustomerId: accData._id,
-					status: "Connected",
-				},
-				{ upsert: true },
-			);
-			console.log("Account connected:", accData.id);
-		}
+			// Find the user in your DB by monoCustomerId
+			const user = await User.findOne({ monoCustomerId: customer.id });
+			if (!user) {
+				return res
+					.status(404)
+					.json({ success: false, error: "User not found" });
+			}
 
-		// 2. Handle account_updated
-		else if (eventType === "mono.events.account_updated") {
-			const acc = event.data.account;
-			await BankConnection.updateOne(
-				{ monoAccountId: acc._id },
-				{
-					accountName: acc.name,
-					accountNumber: acc.accountNumber,
-					bankName: acc.institution?.name || "Unknown",
-					balance: acc.balance,
-					currency: acc.currency,
-					type: acc.type,
-					status: "Active",
-				},
-				{ upsert: true },
-			);
-			console.log("Account updated:", acc._id);
-		}
+			// Check if this account already exists
+			const existing = await BankConnection.findOne({
+				monoAccountId: account.id,
+				userId: user._id,
+			});
 
-		// 3. Handle new transactions
-		else if (eventType === "transactions.created") {
-			const txData = event.data;
-			const connection = await BankConnection.findOne({
-				monoAccountId: txData.account_id,
+			if (existing) {
+				return res
+					.status(200)
+					.json({ success: true, message: "Account already linked" });
+			}
+
+			// Save the account
+			await BankConnection.create({
+				userId: user._id,
+				provider: "mono",
+				accountName: account.name,
+				accountNumber: account.account_number,
+				bankName: account.institution.name,
+				monoCustomerId: customer.id,
+				monoAccountId: account.id,
 				status: "Active",
 			});
 
-			if (!connection) {
-				console.warn(
-					"Mono transaction received but no active connection found",
-				);
-				return res.status(200).json({ success: true });
-			}
-
-			await Transaction.updateOne(
-				{ transactionId: txData._id },
-				{
-					userId: connection.userId,
-					bankConnectionId: connection._id,
-					transactionId: txData._id,
-					amount: txData.amount,
-					description: txData.narration,
-					type: txData.type === "debit" ? "expense" : "income",
-					date: txData.date,
-					source: "bank",
-				},
-				{ upsert: true },
-			);
-
-			if (connection.pushToken) {
-				const user = {
-					_id: connection.userId,
-					pushToken: connection.pushToken,
-				};
-				await pushBudgetAlerts(user);
-			} else {
-				console.log("No push token found for user", connection.userId);
-			}
-
-			console.log("Mono transaction processed for user:", connection.userId);
+			return res
+				.status(200)
+				.json({ success: true, message: "Account linked successfully" });
 		}
 
-		// Ignore other events
-		else {
-			console.log("Ignoring event type:", eventType);
-		}
-
-		res.status(200).json({ success: true });
+		res.status(200).json({ success: true, message: "Webhook received" });
 	} catch (err) {
-		console.error("Error handling Mono webhook:", err.message);
-		res.status(500).json({ error: err.message });
+		console.error("Mono webhook error:", err.message);
+		res.status(500).json({ success: false, error: err.message });
 	}
-});
-
-export default router;
+};
