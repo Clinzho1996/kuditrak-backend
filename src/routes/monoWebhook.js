@@ -1,3 +1,4 @@
+// routes/monoWebhook.js
 import express from "express";
 import BankConnection from "../models/BankConnection.js";
 import User from "../models/User.js";
@@ -9,30 +10,41 @@ router.post("/webhook", async (req, res) => {
 		const payload = req.body.data?.data || req.body.data;
 		console.log("📥 PAYLOAD:", payload);
 
+		// Respond immediately
 		res.status(200).json({ success: true, message: "Webhook received" });
 
 		// =========================
-		// CASE 1: account_connected (customer exists)
+		// CASE 1: account_connected → save monoCustomerId + create connection
 		// =========================
 		if (payload?.id && payload?.customer) {
 			const accountId = payload.id;
 			const customerId = payload.customer;
 
-			const user = await User.findOne({ monoCustomerId: customerId });
-			if (!user) {
-				return console.log(
-					`❌ Cannot save customerId, no user found for customer: ${customerId}`,
-				);
+			// Find the user via the customer ref/session (or via meta.userId if you send it)
+			let user;
+			if (payload.meta?.userId) {
+				user = await User.findById(payload.meta.userId);
+			} else {
+				user = await User.findOne({ monoCustomerId: customerId });
 			}
 
-			// Save Mono Customer ID if missing
+			if (!user) {
+				console.log(
+					"❌ Cannot create connection: user not found for account",
+					accountId,
+				);
+				return;
+			}
+
+			// Save Mono customerId to user if not already
 			if (!user.monoCustomerId) {
 				user.monoCustomerId = customerId;
 				await user.save();
-				console.log("✅ Mono customerId saved to user:", user._id);
+				console.log("✅ Saved monoCustomerId to user:", user._id);
 			}
 
-			await BankConnection.findOneAndUpdate(
+			// Upsert BankConnection
+			const connection = await BankConnection.findOneAndUpdate(
 				{ monoAccountId: accountId },
 				{
 					userId: user._id,
@@ -49,44 +61,47 @@ router.post("/webhook", async (req, res) => {
 		}
 
 		// =========================
-		// CASE 2: account_updated
+		// CASE 2: account_updated → update existing connection only
 		// =========================
 		if (payload?.account?._id) {
 			const account = payload.account;
-			const accountId = account._id;
 
-			let connection = await BankConnection.findOne({
-				monoAccountId: accountId,
+			const connection = await BankConnection.findOne({
+				monoAccountId: account._id,
 			});
+
 			if (!connection) {
-				// Cannot create new connection without user info
-				return console.log(
-					`❌ Cannot create connection: user not found for account ${accountId}`,
-				);
+				console.log("⚠️ No connection found for:", account._id);
+				return;
 			}
 
-			// Update connection
+			// Find user to ensure monoCustomerId is present
+			const user = await User.findById(connection.userId);
+			if (!user || !user.monoCustomerId) {
+				console.log(
+					"❌ Cannot update: user not found or customerId missing for account",
+					account._id,
+				);
+				return;
+			}
+
+			// Update connection details
 			connection.accountName = account.name;
 			connection.accountNumber = account.accountNumber;
-			connection.bankName = account.institution?.name || "Unknown";
+			connection.bankName = account.institution?.name;
 			connection.balance = account.balance;
 			connection.currency = account.currency;
-			connection.status = "Active";
 			connection.lastSync = new Date();
+			connection.status = "Active";
 
 			await connection.save();
-			console.log("✅ account_updated saved:", accountId);
+			console.log("✅ account_updated saved:", account._id);
 			return;
 		}
 
 		// =========================
-		// CASE 3: Job events (sync_balance / sync_statement)
+		// Other payloads (jobs.*, etc.) → just log
 		// =========================
-		if (payload?.name?.startsWith("jobs.accounts.")) {
-			console.log(`⚠️ Job event: ${payload.name} - status: ${payload.status}`);
-			return;
-		}
-
 		console.log("⚠️ Unknown payload:", payload);
 	} catch (err) {
 		console.error("❌ Webhook error:", err);
