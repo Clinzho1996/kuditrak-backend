@@ -14,6 +14,7 @@ router.post("/webhook", async (req, res) => {
 
 		console.log("📥 PAYLOAD:", payload);
 		console.log("📌 Event Type:", eventType);
+		console.log("raw payload", rawPayload);
 
 		// Respond immediately
 		res.status(200).json({ success: true });
