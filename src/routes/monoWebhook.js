@@ -68,6 +68,51 @@ router.post("/webhook", async (req, res) => {
 
 			console.log("✅ account_updated saved:", account._id);
 		}
+
+		// =========================
+		// ✅ account_updated (CREATE OR UPDATE)
+		// =========================
+		if (payload?.account?._id) {
+			const account = payload.account;
+
+			// Try to find existing connection
+			let connection = await BankConnection.findOne({
+				monoAccountId: account._id,
+			});
+
+			// 🚨 If NOT found → CREATE IT (this is your missing piece)
+			if (!connection) {
+				console.log("⚡ Creating missing connection from account_updated");
+
+				// We don’t have customerId here, so fallback:
+				// find user by ANY existing monoCustomerId (or skip if not found)
+				const user = await User.findOne({ monoCustomerId: { $exists: true } });
+
+				if (!user) {
+					console.log("❌ No user found to attach account");
+					return;
+				}
+
+				connection = new BankConnection({
+					userId: user._id,
+					monoCustomerId: user.monoCustomerId,
+					monoAccountId: account._id,
+				});
+			}
+
+			// Update full details
+			connection.accountName = account.name;
+			connection.accountNumber = account.accountNumber;
+			connection.bankName = account.institution?.name;
+			connection.balance = account.balance;
+			connection.currency = account.currency;
+			connection.status = "Active";
+			connection.lastSync = new Date();
+
+			await connection.save();
+
+			console.log("✅ account_updated saved (upsert):", account._id);
+		}
 	} catch (err) {
 		console.error("❌ Webhook error:", err);
 	}
