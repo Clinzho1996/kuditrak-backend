@@ -8,13 +8,13 @@ router.post("/webhook", async (req, res) => {
 	try {
 		const rawPayload = req.body;
 
-		// Mono event type might be top-level or nested
+		// Normalize event and payload
 		const eventType = rawPayload.event || rawPayload.data?.event;
 		const payload =
 			rawPayload.data?.data || rawPayload.data?.account || rawPayload;
 
-		console.log("📥 PAYLOAD:", payload);
 		console.log("📌 Event Type:", eventType);
+		console.log("📥 PAYLOAD:", payload);
 
 		// Respond immediately
 		res.status(200).json({ success: true });
@@ -56,7 +56,7 @@ router.post("/webhook", async (req, res) => {
 
 		// ---------- ACCOUNT UPDATED ----------
 		if (eventType === "mono.events.account_updated") {
-			const accountData = payload.account || payload; // handle both nested and direct
+			const accountData = payload.account || payload; // full account object
 			if (!accountData || !accountData._id) {
 				console.log("⚠️ No account data in payload:", payload);
 				return;
@@ -64,27 +64,53 @@ router.post("/webhook", async (req, res) => {
 
 			const accountId = accountData._id;
 
+			const user = await User.findOne({
+				monoCustomerId: payload.customerId || payload.customer,
+			});
+			if (!user) {
+				console.log("❌ Cannot update: user not found for account", accountId);
+				return;
+			}
+
+			await BankConnection.findOneAndUpdate(
+				{ monoAccountId: accountId },
+				{
+					userId: user._id,
+					monoCustomerId: user.monoCustomerId,
+					monoAccountId: accountId,
+					accountName: accountData.name,
+					accountNumber: accountData.accountNumber,
+					bankName: accountData.institution?.name,
+					currency: accountData.currency,
+					balance: accountData.balance,
+					bvn: accountData.bvn,
+					status: "Active",
+					lastSync: new Date(),
+				},
+				{ upsert: true, returnDocument: "after" },
+			);
+
+			console.log("✅ account_updated saved:", accountId);
+			return;
+		}
+
+		// ---------- ACCOUNT REAUTHORIZED ----------
+		if (eventType === "mono.events.account_reauthorized") {
+			const accountId = payload._id;
 			const connection = await BankConnection.findOne({
 				monoAccountId: accountId,
 			});
 			if (!connection) {
 				console.log(
-					"❌ Cannot update: bank connection not found for account",
+					"❌ Cannot reauthorize: bank connection not found",
 					accountId,
 				);
 				return;
 			}
-
-			connection.accountName = accountData.name || connection.accountName;
-			connection.accountNumber =
-				accountData.accountNumber || connection.accountNumber;
-			connection.bankName =
-				accountData.institution?.name || connection.bankName;
 			connection.status = "Active";
 			connection.lastSync = new Date();
-
 			await connection.save();
-			console.log("✅ account_updated saved:", accountId);
+			console.log("✅ account_reauthorized updated:", accountId);
 			return;
 		}
 
