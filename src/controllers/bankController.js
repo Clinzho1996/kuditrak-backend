@@ -1,31 +1,34 @@
-// controllers/accountController.js
 import BankConnection from "../models/BankConnection.js";
 import User from "../models/User.js";
 import mono from "../services/monoService.js";
 import { checkLimits } from "../services/subscriptionService.js";
 
+/**
+ * Step 1: Initiate bank link → returns link + monoCustomerId
+ */
 export const initiateBankLink = async (req, res) => {
 	try {
-		// Check subscription / limits
 		await checkLimits(req.user._id, "bank_connection");
 
 		const { name, email } = req.body;
 
-		// Unique reference
 		const timestamp = Date.now();
 		const randomStr = Math.random().toString(36).substring(2, 8);
 		const uniqueRef = `LINK_${timestamp}_${randomStr}`;
 
 		const response = await mono.post("/accounts/initiate", {
-			customer: { name, email }, // still needed for Mono link
+			customer: { name, email },
 			meta: { ref: uniqueRef },
 			scope: "auth",
 			redirect_url: "https://kuditrak.com/mono-redirect",
 		});
 
+		const monoCustomerId = response.data.data.customer.id;
+
 		res.status(200).json({
 			success: true,
 			monoUrl: response.data.data.mono_url,
+			monoCustomerId,
 			ref: uniqueRef,
 		});
 	} catch (err) {
@@ -42,11 +45,13 @@ export const initiateBankLink = async (req, res) => {
 };
 
 /**
- * Save Mono customer ID to user profile
+ * Step 2: Save monoCustomerId to user before webhook
  */
 export const saveMonoCustomerId = async (req, res) => {
 	try {
 		const { monoCustomerId } = req.body;
+		if (!monoCustomerId) throw new Error("Missing monoCustomerId");
+
 		req.user.monoCustomerId = monoCustomerId;
 		await req.user.save();
 
@@ -58,50 +63,42 @@ export const saveMonoCustomerId = async (req, res) => {
 };
 
 /**
- * Link bank account (optional extra if using direct v2)
+ * Optional: direct linking for v2 accounts (frontend can skip if using webhook)
  */
 export const linkBankAccount = async (req, res) => {
 	try {
-		const { accountId } = req.body; // Mono account ID from front-end
+		const { accountId } = req.body;
 
-		// Check subscription
 		const user = await User.findById(req.user._id);
-		if (user.subscription?.plan === "free") {
-			return res.status(403).json({
+		if (!user.monoCustomerId) {
+			return res.status(400).json({
 				success: false,
-				error:
-					"Bank linking not available on free plan. Upgrade to connect accounts.",
-				requiresUpgrade: true,
+				error: "Mono customer ID not saved. Initiate account first.",
 			});
 		}
 
-		// Fetch account details from Mono
 		const response = await mono.get(`/accounts/${accountId}`);
 		const account = response.data.data;
 
-		// Check if account already exists
 		const existing = await BankConnection.findOne({
-			userId: req.user._id,
-			accountNumber: account.account_number,
-			bankName: account.institution.name,
-			status: "Active",
+			userId: user._id,
+			monoAccountId: account.id,
 		});
-		if (existing) {
+		if (existing)
 			return res
 				.status(400)
-				.json({ success: false, error: "Bank account already linked" });
-		}
+				.json({ success: false, error: "Account already linked" });
 
-		// Save bank connection
 		const connection = await BankConnection.create({
-			userId: req.user._id,
+			userId: user._id,
+			monoCustomerId: user.monoCustomerId,
+			monoAccountId: account.id,
 			accountName: account.name,
 			accountNumber: account.account_number,
-			bankName: account.institution.name,
-			monoCustomerId: account.customer.id,
-			monoAccountId: account.id,
+			bankName: account.institution?.name || "Unknown",
 			provider: "mono",
 			status: "Active",
+			lastSync: new Date(),
 		});
 
 		res.status(200).json({ success: true, connection });
@@ -116,110 +113,18 @@ export const linkBankAccount = async (req, res) => {
 };
 
 /**
- * Fetch all bank accounts for a user (handles pagination)
+ * Get user bank accounts
  */
 export const getUserBankAccounts = async (req, res) => {
 	try {
 		const accounts = await BankConnection.find({
 			userId: req.user._id,
 			status: "Active",
-		}).sort({ lastSync: -1 }); // most recent first
+		}).sort({ lastSync: -1 });
 
-		res.status(200).json({
-			success: true,
-			accounts,
-		});
+		res.status(200).json({ success: true, accounts });
 	} catch (err) {
 		console.error("Get user bank accounts error:", err.message);
 		res.status(500).json({ success: false, error: err.message });
-	}
-};
-
-export const syncMonoAccounts = async (req, res) => {
-	try {
-		const user = await User.findById(req.user._id);
-		if (!user?.monoCustomerId) throw new Error("Mono customer ID not found");
-
-		const response = await mono.get("/accounts"); // fetch all accounts for your app
-		const allAccounts = response.data.data;
-
-		for (const acc of allAccounts) {
-			await BankConnection.findOneAndUpdate(
-				{ monoAccountId: acc.id },
-				{
-					userId: user._id,
-					monoCustomerId: user.monoCustomerId,
-					monoAccountId: acc.id,
-					accountName: acc.name,
-					accountNumber: acc.account_number,
-					bankName: acc.institution?.name || "Unknown",
-					status: "Active",
-					lastSync: new Date(),
-				},
-				{ upsert: true },
-			);
-		}
-
-		res
-			.status(200)
-			.json({
-				success: true,
-				message: "Mono accounts synced",
-				count: allAccounts.length,
-			});
-	} catch (err) {
-		console.error("Sync Mono accounts error:", err.message);
-		res.status(500).json({ success: false, error: err.message });
-	}
-};
-
-/**
- * Unlink a bank account
- */
-export const unlinkBankAccount = async (req, res) => {
-	try {
-		const { accountId } = req.params;
-
-		const account = await BankConnection.findOne({
-			_id: accountId,
-			userId: req.user._id,
-		});
-		if (!account) return res.status(404).json({ error: "Account not found" });
-
-		account.status = "Unlinked";
-		await account.save();
-
-		res
-			.status(200)
-			.json({ success: true, message: "Account unlinked successfully" });
-	} catch (err) {
-		console.error("Unlink account error:", err.message);
-		res.status(500).json({ error: err.message });
-	}
-};
-
-export const fetchAllMonoAccounts = async () => {
-	let accounts = [];
-	let url = "https://api.withmono.com/v2/accounts"; // start with full URL
-
-	try {
-		while (url) {
-			const res = await mono.get(url); // mono already has baseURL, but we pass full URL here
-			accounts = accounts.concat(res.data.data);
-
-			if (res.data.meta.next) {
-				url = res.data.meta.next; // full URL for next page
-			} else {
-				url = null; // stop loop
-			}
-		}
-
-		return accounts;
-	} catch (err) {
-		console.error(
-			"Error fetching Mono accounts:",
-			err.response?.data || err.message,
-		);
-		throw new Error("Failed to fetch Mono accounts");
 	}
 };
