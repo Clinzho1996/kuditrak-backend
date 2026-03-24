@@ -49,61 +49,51 @@ router.post("/webhook", async (req, res) => {
 		// =========================
 		// ✅ CASE 2: ACCOUNT UPDATED (MAIN EVENT)
 		// =========================
+		// inside webhook POST handler
+
 		if (payload?.account?._id) {
 			const account = payload.account;
 
-			// 🔥 IMPORTANT: find user properly
-			let user = null;
-
-			// Try to get from existing connection first
-			const existingConnection = await BankConnection.findOne({
+			// Must find user by monoCustomerId first
+			const connection = await BankConnection.findOne({
 				monoAccountId: account._id,
 			});
+			let user = null;
 
-			if (existingConnection?.monoCustomerId) {
+			if (connection?.monoCustomerId) {
 				user = await User.findOne({
-					monoCustomerId: existingConnection.monoCustomerId,
+					monoCustomerId: connection.monoCustomerId,
 				});
-			}
-
-			// fallback (not ideal but safe for now)
-			if (!user) {
-				user = await User.findOne({
-					monoCustomerId: { $exists: true },
-				});
+			} else if (payload?.customer) {
+				user = await User.findOne({ monoCustomerId: payload.customer });
 			}
 
 			if (!user) {
-				console.log("❌ No user found for account:", account._id);
+				console.log(
+					"❌ Cannot create connection: user not found for account",
+					account._id,
+				);
 				return;
 			}
 
-			const connection = await BankConnection.findOneAndUpdate(
-				{ monoAccountId: account._id }, // ✅ SINGLE SOURCE OF TRUTH
+			await BankConnection.findOneAndUpdate(
+				{ monoAccountId: account._id, monoCustomerId: user.monoCustomerId },
 				{
 					userId: user._id,
 					monoCustomerId: user.monoCustomerId,
-
-					// account details
+					monoAccountId: account._id,
 					accountName: account.name,
 					accountNumber: account.accountNumber,
-					bankName: account.institution?.name,
-
-					// optional fields
+					bankName: account.institution?.name || "Unknown",
 					balance: account.balance,
 					currency: account.currency,
-
 					status: "Active",
 					lastSync: new Date(),
 				},
-				{
-					upsert: true,
-					new: true,
-					setDefaultsOnInsert: true,
-				},
+				{ upsert: true, new: true, setDefaultsOnInsert: true },
 			);
 
-			console.log("✅ account_updated upserted:", connection._id);
+			console.log("✅ account_updated saved:", account._id);
 		}
 	} catch (err) {
 		console.error("❌ Webhook error:", err);
