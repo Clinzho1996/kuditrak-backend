@@ -11,7 +11,7 @@ router.post("/webhook", async (req, res) => {
 
 		res.status(200).json({ success: true });
 
-		// Account connected / updated
+		// Only handle account connected/updated events
 		if (payload?.id && payload?.customer) {
 			const accountId = payload.id;
 			const customerId = payload.customer;
@@ -26,23 +26,23 @@ router.post("/webhook", async (req, res) => {
 				return;
 			}
 
-			// Upsert bank connection
+			// Upsert bank connection using top-level fields from payload
 			const connection = await BankConnection.findOneAndUpdate(
 				{ monoAccountId: accountId },
 				{
 					userId: user._id,
 					monoCustomerId: customerId,
 					monoAccountId: accountId,
-					accountName: payload.account?.name || "Unknown",
-					accountNumber: payload.account?.accountNumber || "Unknown",
-					bankName: payload.account?.institution?.name || "Unknown",
+					accountName: payload.name || "Unknown",
+					accountNumber: payload.account_number || "Unknown",
+					bankName: payload.institution?.name || "Unknown",
 					status: "Active",
 					lastSync: new Date(),
 				},
 				{ upsert: true, new: true },
 			);
 
-			console.log("✅ account_connected / updated saved:", accountId);
+			console.log("✅ account_connected / updated saved:", connection);
 			return;
 		}
 
