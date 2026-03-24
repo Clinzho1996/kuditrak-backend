@@ -7,57 +7,19 @@ const router = express.Router();
 
 router.post("/webhook", async (req, res) => {
 	try {
-		// ✅ Normalize payload (THIS IS THE KEY FIX)
-		const eventType = req.body.type || req.body.data?.event;
 		const payload = req.body.data?.data || req.body.data;
 
-		console.log("EVENT:", eventType);
 		console.log("PAYLOAD:", payload);
 
-		// Always respond fast
-		res.status(200).json({ success: true, message: "Webhook received" });
+		// respond immediately
+		res.status(200).json({ success: true });
 
 		// =========================
-		// ✅ ACCOUNT LINKED (your curl + some Mono cases)
+		// ✅ CASE 1: account_connected
 		// =========================
-		if (eventType === "ACCOUNT_LINKED") {
-			const account = payload.account;
-			const customerId = payload.customer?.id;
-
-			if (!account || !customerId) return;
-
-			const user = await User.findOne({ monoCustomerId: customerId });
-			if (!user) {
-				console.log("User not found:", customerId);
-				return;
-			}
-
-			await BankConnection.findOneAndUpdate(
-				{ monoAccountId: account.id },
-				{
-					userId: user._id,
-					monoCustomerId: customerId,
-					monoAccountId: account.id,
-					accountName: account.name,
-					accountNumber: account.account_number,
-					bankName: account.institution?.name,
-					status: "Active",
-					lastSync: new Date(),
-				},
-				{ upsert: true, new: true },
-			);
-
-			console.log("✅ ACCOUNT_LINKED saved:", account.id);
-		}
-
-		// =========================
-		// ✅ ACCOUNT CONNECTED (LIVE - FIRST EVENT)
-		// =========================
-		if (eventType === "mono.events.account_connected") {
+		if (payload?.id && payload?.customer) {
 			const accountId = payload.id;
 			const customerId = payload.customer;
-
-			if (!accountId || !customerId) return;
 
 			const user = await User.findOne({ monoCustomerId: customerId });
 			if (!user) {
@@ -81,11 +43,10 @@ router.post("/webhook", async (req, res) => {
 		}
 
 		// =========================
-		// ✅ ACCOUNT UPDATED (LIVE - FULL DATA)
+		// ✅ CASE 2: account_updated
 		// =========================
-		if (eventType === "mono.events.account_updated") {
+		if (payload?.account?._id) {
 			const account = payload.account;
-			if (!account) return;
 
 			const connection = await BankConnection.findOne({
 				monoAccountId: account._id,
