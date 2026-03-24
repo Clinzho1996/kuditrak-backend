@@ -3,13 +3,24 @@ import mongoose from "mongoose";
 
 const bankConnectionSchema = new mongoose.Schema({
 	userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-	provider: String,
+	provider: { type: String, default: "mono" },
+
 	accountName: String,
 	accountNumber: String,
 	bankName: String,
-	monoCustomerId: String, // <-- Store Mono customer ID
-	monoAccountId: String, // <-- Optional: Mono account ID
-	status: { type: String, enum: ["Active", "Inactive"], default: "Active" },
+
+	monoCustomerId: String,
+	monoAccountId: { type: String, unique: true }, // 🔥 CRITICAL
+
+	balance: Number,
+	currency: String,
+
+	status: {
+		type: String,
+		enum: ["Active", "Inactive"],
+		default: "Active",
+	},
+
 	lastSync: Date,
 });
 

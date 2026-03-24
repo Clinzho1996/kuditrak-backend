@@ -1,4 +1,3 @@
-// routes/monoWebhook.js
 import express from "express";
 import BankConnection from "../models/BankConnection.js";
 import User from "../models/User.js";
@@ -9,26 +8,27 @@ router.post("/webhook", async (req, res) => {
 	try {
 		const payload = req.body.data?.data || req.body.data;
 
-		console.log("PAYLOAD:", payload);
+		console.log("📥 PAYLOAD:", payload);
 
-		// respond immediately
+		// ✅ Always respond immediately
 		res.status(200).json({ success: true });
 
 		// =========================
-		// ✅ account_connected
+		// ✅ CASE 1: ACCOUNT CONNECTED
 		// =========================
 		if (payload?.id && payload?.customer) {
 			const accountId = payload.id;
 			const customerId = payload.customer;
 
 			const user = await User.findOne({ monoCustomerId: customerId });
+
 			if (!user) {
-				console.log("User not found:", customerId);
+				console.log("❌ User not found:", customerId);
 				return;
 			}
 
 			await BankConnection.findOneAndUpdate(
-				{ monoAccountId: accountId },
+				{ monoAccountId: accountId }, // ✅ unique key
 				{
 					userId: user._id,
 					monoCustomerId: customerId,
@@ -36,56 +36,74 @@ router.post("/webhook", async (req, res) => {
 					status: "Active",
 					lastSync: new Date(),
 				},
-				{ upsert: true, new: true },
+				{
+					upsert: true,
+					new: true,
+					setDefaultsOnInsert: true,
+				},
 			);
 
 			console.log("✅ account_connected saved:", accountId);
 		}
 
 		// =========================
-		// ✅ account_updated (FINAL CORRECT VERSION)
+		// ✅ CASE 2: ACCOUNT UPDATED (MAIN EVENT)
 		// =========================
 		if (payload?.account?._id) {
 			const account = payload.account;
 
-			let connection = await BankConnection.findOne({
+			// 🔥 IMPORTANT: find user properly
+			let user = null;
+
+			// Try to get from existing connection first
+			const existingConnection = await BankConnection.findOne({
 				monoAccountId: account._id,
 			});
 
-			// ✅ CREATE if missing
-			if (!connection) {
-				console.log("⚡ Creating missing connection:", account._id);
-
-				// ⚠️ better user match (IMPORTANT FIX)
-				const user = await User.findOne({
-					monoCustomerId: { $exists: true },
-				});
-
-				if (!user) {
-					console.log("❌ No user found");
-					return;
-				}
-
-				connection = new BankConnection({
-					userId: user._id,
-					monoCustomerId: user.monoCustomerId,
-					monoAccountId: account._id,
+			if (existingConnection?.monoCustomerId) {
+				user = await User.findOne({
+					monoCustomerId: existingConnection.monoCustomerId,
 				});
 			}
 
-			// ✅ SAFE updates (handles partial payloads too)
-			connection.accountName = account.name || connection.accountName;
-			connection.accountNumber =
-				account.accountNumber || connection.accountNumber;
-			connection.bankName = account.institution?.name || connection.bankName;
-			connection.balance = account.balance ?? connection.balance;
-			connection.currency = account.currency || connection.currency;
-			connection.status = "Active";
-			connection.lastSync = new Date();
+			// fallback (not ideal but safe for now)
+			if (!user) {
+				user = await User.findOne({
+					monoCustomerId: { $exists: true },
+				});
+			}
 
-			await connection.save();
+			if (!user) {
+				console.log("❌ No user found for account:", account._id);
+				return;
+			}
 
-			console.log("✅ account_updated saved:", account._id);
+			const connection = await BankConnection.findOneAndUpdate(
+				{ monoAccountId: account._id }, // ✅ SINGLE SOURCE OF TRUTH
+				{
+					userId: user._id,
+					monoCustomerId: user.monoCustomerId,
+
+					// account details
+					accountName: account.name,
+					accountNumber: account.accountNumber,
+					bankName: account.institution?.name,
+
+					// optional fields
+					balance: account.balance,
+					currency: account.currency,
+
+					status: "Active",
+					lastSync: new Date(),
+				},
+				{
+					upsert: true,
+					new: true,
+					setDefaultsOnInsert: true,
+				},
+			);
+
+			console.log("✅ account_updated upserted:", connection._id);
 		}
 	} catch (err) {
 		console.error("❌ Webhook error:", err);
