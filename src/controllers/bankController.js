@@ -123,18 +123,53 @@ export const getUserBankAccounts = async (req, res) => {
 		const accounts = await BankConnection.find({
 			userId: req.user._id,
 			status: "Active",
-		}).sort({ createdAt: -1 });
+		}).sort({ lastSync: -1 }); // most recent first
 
 		res.status(200).json({
 			success: true,
 			accounts,
 		});
 	} catch (err) {
-		console.error("Fetch accounts error:", err.message);
-		res.status(500).json({
-			success: false,
-			error: err.message || "Failed to fetch bank accounts",
-		});
+		console.error("Get user bank accounts error:", err.message);
+		res.status(500).json({ success: false, error: err.message });
+	}
+};
+
+export const syncMonoAccounts = async (req, res) => {
+	try {
+		const user = await User.findById(req.user._id);
+		if (!user?.monoCustomerId) throw new Error("Mono customer ID not found");
+
+		const response = await mono.get("/accounts"); // fetch all accounts for your app
+		const allAccounts = response.data.data;
+
+		for (const acc of allAccounts) {
+			await BankConnection.findOneAndUpdate(
+				{ monoAccountId: acc.id },
+				{
+					userId: user._id,
+					monoCustomerId: user.monoCustomerId,
+					monoAccountId: acc.id,
+					accountName: acc.name,
+					accountNumber: acc.account_number,
+					bankName: acc.institution?.name || "Unknown",
+					status: "Active",
+					lastSync: new Date(),
+				},
+				{ upsert: true },
+			);
+		}
+
+		res
+			.status(200)
+			.json({
+				success: true,
+				message: "Mono accounts synced",
+				count: allAccounts.length,
+			});
+	} catch (err) {
+		console.error("Sync Mono accounts error:", err.message);
+		res.status(500).json({ success: false, error: err.message });
 	}
 };
 
