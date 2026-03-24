@@ -7,7 +7,6 @@ import {
 	saveMonoCustomerId,
 	unlinkBankAccount,
 } from "../controllers/bankController.js";
-import { handleMonoWebhook } from "../controllers/monoWebhook.js";
 import { pullMonoTransactions } from "../controllers/transactionController.js";
 import protect from "../middleware/auth.js";
 
@@ -18,7 +17,6 @@ router.post("/link", protect, linkBankAccount);
 router.post("/initiate", protect, initiateBankLink);
 
 router.get("/", protect, getUserBankAccounts);
-router.post("/webhook", handleMonoWebhook);
 
 router.delete("/:accountId", protect, unlinkBankAccount);
 router.get("/:accountId/transactions", protect, pullMonoTransactions);

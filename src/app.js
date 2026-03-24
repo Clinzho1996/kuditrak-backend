@@ -8,6 +8,7 @@ import { default as bankRoutes } from "./routes/banks.js";
 import budgetRoutes from "./routes/budget.js";
 import categoryRoutes from "./routes/categoryRoutes.js";
 import insightRoutes from "./routes/insight.js";
+import monoRoutes from "./routes/monoWebhook.js";
 import notificationRoutes from "./routes/notifications.js";
 import savingsRoutes from "./routes/savings.js";
 import subscriptionRoutes from "./routes/subscription.js";
@@ -30,6 +31,7 @@ app.use("/api/budgets", budgetRoutes);
 app.use("/api/insights", insightRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/account", bankRoutes);
+app.use("/api/mono", monoRoutes);
 app.use("/api/subscription", subscriptionRoutes);
 
 // Error handler

@@ -12,35 +12,43 @@ router.post("/webhook", async (req, res) => {
 		if (type === "ACCOUNT_LINKED") {
 			const { customer, account } = data;
 
-			// Find the user by monoCustomerId (or update if first time)
+			// Find the user by monoCustomerId
 			let user = await User.findOne({ monoCustomerId: customer.id });
+
 			if (!user) {
-				// if first time linking, you may find by email / prompt user to provide it
-				// for simplicity, assume customer.id === user.monoCustomerId
 				console.log(
-					"First account linked, find user by another means if needed",
+					"First account linked: user not found by monoCustomerId. You may need to associate manually or by email.",
 				);
+				// Optionally, you can try: user = await User.findOne({ email: account.email });
+				// If no user found, just log and skip saving
+				return res.status(404).json({
+					success: false,
+					message:
+						"User not found for this Mono customer ID. Manual association may be needed.",
+				});
 			}
 
-			// Save bank connection
-			await BankConnection.findOneAndUpdate(
+			// Upsert the bank connection
+			const connection = await BankConnection.findOneAndUpdate(
 				{ monoAccountId: account.id },
 				{
-					userId: user?._id,
+					userId: user._id,
 					monoCustomerId: customer.id,
 					monoAccountId: account.id,
 					accountName: account.name,
-					accountNumber: account.account_number,
+					accountNumber: account.account_number || account.accountNumber,
 					bankName: account.institution.name,
 					status: "Active",
 					lastSync: new Date(),
 				},
-				{ upsert: true },
+				{ upsert: true, new: true }, // returns the saved document
 			);
 
-			res
-				.status(200)
-				.json({ success: true, message: "Account linked successfully" });
+			res.status(200).json({
+				success: true,
+				message: "Account linked successfully",
+				connection,
+			});
 		} else {
 			res.status(200).json({ success: true, message: "Webhook received" });
 		}
