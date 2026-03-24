@@ -6,21 +6,24 @@ const router = express.Router();
 
 router.post("/webhook", async (req, res) => {
 	try {
-		const rawPayload = req.body;
+		// Mono sends webhook with event wrapper
+		const webhookData = req.body;
 
-		// Mono wraps event inside data
-		const eventType = rawPayload?.data?.event;
-		const payload = rawPayload?.data?.data;
+		// The actual event is in webhookData.data
+		const eventType = webhookData?.data?.event;
+		const payload = webhookData?.data?.data;
 
 		console.log("📌 Event Type:", eventType);
-		console.log("📥 PAYLOAD:", payload);
-		console.log("raw payload", rawPayload);
+		console.log("📥 PAYLOAD:", JSON.stringify(payload, null, 2));
+		console.log("raw payload", JSON.stringify(webhookData, null, 2));
 
 		// Respond immediately
 		res.status(200).json({ success: true });
 
 		if (!eventType || !payload) {
 			console.log("⚠️ Invalid payload or missing event type");
+			console.log("eventType:", eventType);
+			console.log("payload:", payload);
 			return;
 		}
 
@@ -98,9 +101,14 @@ router.post("/webhook", async (req, res) => {
 
 		// ---------- ACCOUNT REAUTHORIZED ----------
 		if (eventType === "mono.events.account_reauthorized") {
+			console.log("🔄 Processing reauthorization event");
+
 			const accountData = payload.account || payload;
 			if (!accountData || !accountData._id) {
-				console.log("⚠️ No account data in payload:", payload);
+				console.log(
+					"⚠️ No account data in payload:",
+					JSON.stringify(payload, null, 2),
+				);
 				return;
 			}
 
@@ -111,10 +119,34 @@ router.post("/webhook", async (req, res) => {
 			});
 			if (!connection) {
 				console.log(
-					"❌ Cannot update reauthorized: bank connection not found",
+					"❌ Cannot update reauthorized: bank connection not found for account",
 					accountId,
 				);
 				return;
+			}
+
+			// For reauthorization, we might want to fetch fresh account data
+			// since the webhook doesn't contain full account details
+			try {
+				// Fetch updated account details from Mono API
+				const monoResponse = await mono.get(`/accounts/${accountId}`);
+				const freshAccountData = monoResponse.data.data;
+
+				connection.accountName =
+					freshAccountData.name || connection.accountName;
+				connection.accountNumber =
+					freshAccountData.account_number || connection.accountNumber;
+				connection.bankName =
+					freshAccountData.institution?.name || connection.bankName;
+				connection.balance = freshAccountData.balance ?? connection.balance;
+				connection.currency = freshAccountData.currency || connection.currency;
+				connection.bvn = freshAccountData.bvn || connection.bvn;
+			} catch (fetchError) {
+				console.log(
+					"⚠️ Could not fetch fresh account data:",
+					fetchError.message,
+				);
+				// Continue without fresh data
 			}
 
 			// Preserve monoCustomerId
@@ -131,6 +163,7 @@ router.post("/webhook", async (req, res) => {
 		console.log("⚠️ Unknown event type:", eventType);
 	} catch (err) {
 		console.error("❌ Webhook error:", err);
+		// Don't throw error here, just log it
 	}
 });
 
