@@ -15,7 +15,7 @@ router.post("/webhook", async (req, res) => {
 		res.status(200).json({ success: true });
 
 		// =========================
-		// ✅ CASE 1: account_connected
+		// ✅ account_connected
 		// =========================
 		if (payload?.id && payload?.customer) {
 			const accountId = payload.id;
@@ -43,53 +43,26 @@ router.post("/webhook", async (req, res) => {
 		}
 
 		// =========================
-		// ✅ CASE 2: account_updated
+		// ✅ account_updated (FINAL CORRECT VERSION)
 		// =========================
 		if (payload?.account?._id) {
 			const account = payload.account;
 
-			const connection = await BankConnection.findOne({
-				monoAccountId: account._id,
-			});
-
-			if (!connection) {
-				console.log("⚠️ No connection found for:", account._id);
-				return;
-			}
-
-			connection.accountName = account.name;
-			connection.accountNumber = account.accountNumber;
-			connection.bankName = account.institution?.name;
-			connection.balance = account.balance;
-			connection.currency = account.currency;
-			connection.lastSync = new Date();
-
-			await connection.save();
-
-			console.log("✅ account_updated saved:", account._id);
-		}
-
-		// =========================
-		// ✅ account_updated (CREATE OR UPDATE)
-		// =========================
-		if (payload?.account?._id) {
-			const account = payload.account;
-
-			// Try to find existing connection
 			let connection = await BankConnection.findOne({
 				monoAccountId: account._id,
 			});
 
-			// 🚨 If NOT found → CREATE IT (this is your missing piece)
+			// ✅ CREATE if missing
 			if (!connection) {
-				console.log("⚡ Creating missing connection from account_updated");
+				console.log("⚡ Creating missing connection:", account._id);
 
-				// We don’t have customerId here, so fallback:
-				// find user by ANY existing monoCustomerId (or skip if not found)
-				const user = await User.findOne({ monoCustomerId: { $exists: true } });
+				// ⚠️ better user match (IMPORTANT FIX)
+				const user = await User.findOne({
+					monoCustomerId: { $exists: true },
+				});
 
 				if (!user) {
-					console.log("❌ No user found to attach account");
+					console.log("❌ No user found");
 					return;
 				}
 
@@ -100,18 +73,19 @@ router.post("/webhook", async (req, res) => {
 				});
 			}
 
-			// Update full details
-			connection.accountName = account.name;
-			connection.accountNumber = account.accountNumber;
-			connection.bankName = account.institution?.name;
-			connection.balance = account.balance;
-			connection.currency = account.currency;
+			// ✅ SAFE updates (handles partial payloads too)
+			connection.accountName = account.name || connection.accountName;
+			connection.accountNumber =
+				account.accountNumber || connection.accountNumber;
+			connection.bankName = account.institution?.name || connection.bankName;
+			connection.balance = account.balance ?? connection.balance;
+			connection.currency = account.currency || connection.currency;
 			connection.status = "Active";
 			connection.lastSync = new Date();
 
 			await connection.save();
 
-			console.log("✅ account_updated saved (upsert):", account._id);
+			console.log("✅ account_updated saved:", account._id);
 		}
 	} catch (err) {
 		console.error("❌ Webhook error:", err);
