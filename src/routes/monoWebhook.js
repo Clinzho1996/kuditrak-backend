@@ -1,4 +1,3 @@
-// routes/monoWebhook.js
 import express from "express";
 import BankConnection from "../models/BankConnection.js";
 import User from "../models/User.js";
@@ -7,23 +6,28 @@ const router = express.Router();
 
 router.post("/webhook", async (req, res) => {
 	try {
-		const rawPayload = req.body.data || req.body;
-		const eventType = rawPayload.event || rawPayload.type;
+		const rawPayload = req.body;
 
-		// Mono wraps the real payload under data.data sometimes
-		const payload = rawPayload.data?.data || rawPayload.data || rawPayload;
+		// Mono wraps event inside data
+		const eventType = rawPayload?.data?.event;
+		const payload = rawPayload?.data?.data;
 
 		console.log("📥 PAYLOAD:", payload);
+		console.log("📌 Event Type:", eventType);
 
-		// respond immediately to Mono
+		// Respond immediately
 		res.status(200).json({ success: true });
+
+		if (!eventType || !payload) {
+			console.log("⚠️ Invalid payload or missing event type");
+			return;
+		}
 
 		// ---------- ACCOUNT CONNECTED ----------
 		if (eventType === "mono.events.account_connected") {
 			const accountId = payload.id;
 			const customerId = payload.customer;
 
-			// Find user by saved monoCustomerId
 			const user = await User.findOne({ monoCustomerId: customerId });
 			if (!user) {
 				console.log(
@@ -33,14 +37,13 @@ router.post("/webhook", async (req, res) => {
 				return;
 			}
 
-			// Upsert placeholder connection
 			await BankConnection.findOneAndUpdate(
 				{ monoAccountId: accountId },
 				{
 					userId: user._id,
 					monoCustomerId: customerId,
 					monoAccountId: accountId,
-					status: "Processing", // placeholder until updated
+					status: "Processing",
 					lastSync: new Date(),
 				},
 				{ upsert: true, returnDocument: "after" },
@@ -71,7 +74,6 @@ router.post("/webhook", async (req, res) => {
 				return;
 			}
 
-			// Update connection with full details
 			connection.accountName = accountData.name || connection.accountName;
 			connection.accountNumber =
 				accountData.accountNumber || connection.accountNumber;
