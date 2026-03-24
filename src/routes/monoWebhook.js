@@ -8,13 +8,13 @@ router.post("/webhook", async (req, res) => {
 	try {
 		const rawPayload = req.body;
 
-		// Mono wraps event inside data
-		const eventType = rawPayload?.data?.event;
-		const payload = rawPayload?.data?.data;
+		// Mono event type might be top-level or nested
+		const eventType = rawPayload.event || rawPayload.data?.event;
+		const payload =
+			rawPayload.data?.data || rawPayload.data?.account || rawPayload;
 
 		console.log("📥 PAYLOAD:", payload);
 		console.log("📌 Event Type:", eventType);
-		console.log("raw payload", rawPayload);
 
 		// Respond immediately
 		res.status(200).json({ success: true });
@@ -56,7 +56,7 @@ router.post("/webhook", async (req, res) => {
 
 		// ---------- ACCOUNT UPDATED ----------
 		if (eventType === "mono.events.account_updated") {
-			const accountData = payload.account;
+			const accountData = payload.account || payload; // handle both nested and direct
 			if (!accountData || !accountData._id) {
 				console.log("⚠️ No account data in payload:", payload);
 				return;
