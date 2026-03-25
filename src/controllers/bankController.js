@@ -8,6 +8,7 @@ import { checkLimits } from "../services/subscriptionService.js";
  */
 export const initiateBankLink = async (req, res) => {
 	try {
+		// Check subscription limits before initiating
 		await checkLimits(req.user._id, "bank_connection");
 
 		const { name, email } = req.body;
@@ -16,14 +17,36 @@ export const initiateBankLink = async (req, res) => {
 		const randomStr = Math.random().toString(36).substring(2, 8);
 		const uniqueRef = `LINK_${timestamp}_${randomStr}`;
 
-		const response = await mono.post("/accounts/initiate", {
-			customer: { name, email },
+		// Check if user already has a Mono customer ID
+		let monoCustomerId = req.user.monoCustomerId;
+
+		const requestData = {
 			meta: { ref: uniqueRef },
 			scope: "auth",
 			redirect_url: "https://kuditrak.com/mono-redirect",
-		});
+		};
 
-		const monoCustomerId = response.data.data.customer.id;
+		if (monoCustomerId) {
+			// If user already has a Mono customer ID, use it to link additional accounts
+			requestData.customer_id = monoCustomerId;
+			console.log(
+				"Linking additional account for existing customer:",
+				monoCustomerId,
+			);
+		} else {
+			// First time linking - create new customer
+			requestData.customer = { name, email };
+			console.log("Creating new Mono customer");
+		}
+
+		const response = await mono.post("/accounts/initiate", requestData);
+
+		// If this is a new customer, save the ID
+		if (!monoCustomerId) {
+			monoCustomerId = response.data.data.customer.id;
+			req.user.monoCustomerId = monoCustomerId;
+			await req.user.save();
+		}
 
 		res.status(200).json({
 			success: true,
@@ -36,6 +59,16 @@ export const initiateBankLink = async (req, res) => {
 			"Initiate bank link error:",
 			err.response?.data || err.message,
 		);
+
+		// Handle subscription limit error specifically
+		if (err.message.includes("Bank connection limit reached")) {
+			return res.status(403).json({
+				success: false,
+				error: err.message,
+				requiresUpgrade: true,
+			});
+		}
+
 		res.status(500).json({
 			success: false,
 			error: err.message || "Failed to initiate bank linking",
@@ -77,6 +110,9 @@ export const linkBankAccount = async (req, res) => {
 			});
 		}
 
+		// Check subscription limits before linking
+		await checkLimits(req.user._id, "bank_connection");
+
 		const response = await mono.get(`/accounts/${accountId}`);
 		const account = response.data.data;
 
@@ -84,10 +120,12 @@ export const linkBankAccount = async (req, res) => {
 			userId: user._id,
 			monoAccountId: account.id,
 		});
-		if (existing)
-			return res
-				.status(400)
-				.json({ success: false, error: "Account already linked" });
+		if (existing) {
+			return res.status(400).json({
+				success: false,
+				error: "Account already linked",
+			});
+		}
 
 		const connection = await BankConnection.create({
 			userId: user._id,
@@ -96,6 +134,9 @@ export const linkBankAccount = async (req, res) => {
 			accountName: account.name,
 			accountNumber: account.account_number,
 			bankName: account.institution?.name || "Unknown",
+			balance: account.balance,
+			currency: account.currency,
+			bvn: account.bvn,
 			provider: "mono",
 			status: "Active",
 			lastSync: new Date(),
@@ -104,6 +145,17 @@ export const linkBankAccount = async (req, res) => {
 		res.status(200).json({ success: true, connection });
 	} catch (err) {
 		console.error("Link account error:", err.response?.data || err.message);
+
+		// Handle subscription limit error specifically
+		if (err.message.includes("Bank connection limit reached")) {
+			return res.status(403).json({
+				success: false,
+				error: err.message,
+				requiresUpgrade: true,
+				currentLimit: err.message.match(/\d+/)?.[0] || null,
+			});
+		}
+
 		res.status(500).json({
 			success: false,
 			error: err.message || "Failed to link bank account",
