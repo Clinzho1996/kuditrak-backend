@@ -3,30 +3,27 @@ import express from "express";
 import {
 	cancelSubscription,
 	getSubscription,
+	getSubscriptionHistory,
 	getSubscriptionStatus,
+	handleRevenueCatWebhook,
 	syncSubscription,
-	verifySubscription,
+	verifyWithRevenueCat,
 } from "../controllers/subscriptionController.js";
 import protect from "../middleware/auth.js";
 
 const router = express.Router();
 
-// All routes require authentication
-router.use(protect);
+// Public webhook endpoint (no auth required)
+router.post("/webhook/revenuecat", handleRevenueCatWebhook);
 
-// Get current subscription
+// Protected routes
+router.use(protect); // All routes below require authentication
+
 router.get("/", getSubscription);
-
-// Get subscription status
 router.get("/status", getSubscriptionStatus);
-
-// Sync subscription (for RevenueCat)
+router.get("/history", getSubscriptionHistory);
 router.post("/sync", syncSubscription);
-
-// Verify subscription (legacy)
-router.post("/verify", verifySubscription);
-
-// Cancel subscription
 router.post("/cancel", cancelSubscription);
+router.post("/verify", verifyWithRevenueCat);
 
 export default router;
