@@ -77,6 +77,36 @@ const userSchema = new mongoose.Schema({
 			createdAt: { type: Date, default: Date.now },
 		},
 	],
+	notificationSettings: {
+		push_enabled: {
+			type: Boolean,
+			default: true,
+		},
+		email_enabled: {
+			type: Boolean,
+			default: true,
+		},
+		budget_alerts: {
+			type: Boolean,
+			default: true,
+		},
+		savings_goals: {
+			type: Boolean,
+			default: true,
+		},
+		subscriptions: {
+			type: Boolean,
+			default: true,
+		},
+		transactions: {
+			type: Boolean,
+			default: true,
+		},
+		promotions: {
+			type: Boolean,
+			default: false,
+		},
+	},
 
 	// User budgets
 	budgets: [
