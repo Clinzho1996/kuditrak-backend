@@ -12,6 +12,10 @@ import { initializeDefaultCategories } from "./categoryController.js";
 const generateToken = (userId) =>
 	jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: "30d" });
 
+// Generate OTP
+const generateOTP = () => {
+	return Math.floor(100000 + Math.random() * 900000);
+};
 // Send OTP Email
 const sendOTPEmail = async (email, otp, type = "verify") => {
 	const subject =
