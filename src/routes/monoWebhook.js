@@ -7,8 +7,6 @@ const router = express.Router();
 router.post("/webhook", async (req, res) => {
 	try {
 		const webhookPayload = req.body;
-
-		// The event type is at the root level
 		const eventType = webhookPayload?.event;
 		const payload = webhookPayload?.data;
 
@@ -21,8 +19,6 @@ router.post("/webhook", async (req, res) => {
 
 		if (!eventType || !payload) {
 			console.log("⚠️ Invalid payload or missing event type");
-			console.log("eventType:", eventType);
-			console.log("payload:", payload);
 			return;
 		}
 
@@ -64,40 +60,77 @@ router.post("/webhook", async (req, res) => {
 
 			const accountData = payload.account || payload;
 			if (!accountData || !accountData._id) {
-				console.log(
-					"⚠️ No account data in payload:",
-					JSON.stringify(payload, null, 2),
-				);
+				console.log("⚠️ No account data in payload");
 				return;
 			}
 
 			const accountId = accountData._id;
 
-			const connection = await BankConnection.findOne({
+			let connection = await BankConnection.findOne({
 				monoAccountId: accountId,
 			});
+
+			// If connection doesn't exist, try to create it
 			if (!connection) {
-				console.log(
-					"❌ Cannot update: bank connection not found for account",
-					accountId,
-				);
-				return;
+				console.log("⚠️ Bank connection not found, attempting to create...");
+
+				// Try to find user by monoCustomerId from the payload or from the account
+				let userId = null;
+
+				// Check if we have customer info in meta or elsewhere
+				if (payload.meta?.customer_id) {
+					const user = await User.findOne({
+						monoCustomerId: payload.meta.customer_id,
+					});
+					if (user) userId = user._id;
+				}
+
+				// If still no user, we need to wait for the account_connected webhook
+				if (!userId) {
+					console.log(
+						"❌ Cannot create connection: No user found for account",
+						accountId,
+					);
+					console.log(
+						"   This account will be processed when account_connected webhook arrives",
+					);
+					return;
+				}
+
+				// Create new connection
+				connection = new BankConnection({
+					userId: userId,
+					monoAccountId: accountId,
+					monoCustomerId: payload.meta?.customer_id || null,
+					accountName: accountData.name,
+					accountNumber: accountData.accountNumber,
+					bankName: accountData.institution?.name,
+					balance: accountData.balance,
+					currency: accountData.currency,
+					bvn: accountData.bvn,
+					status: "Active",
+					lastSync: new Date(),
+				});
+
+				await connection.save();
+				console.log("✅ Created new bank connection for account:", accountId);
+			} else {
+				// Update existing connection
+				connection.accountName = accountData.name || connection.accountName;
+				connection.accountNumber =
+					accountData.accountNumber || connection.accountNumber;
+				connection.bankName =
+					accountData.institution?.name || connection.bankName;
+				connection.balance = accountData.balance ?? connection.balance;
+				connection.currency = accountData.currency || connection.currency;
+				connection.bvn = accountData.bvn || connection.bvn;
+				connection.status = "Active";
+				connection.lastSync = new Date();
+
+				await connection.save();
+				console.log("✅ Updated bank connection for account:", accountId);
 			}
 
-			// Update with full account data from webhook
-			connection.accountName = accountData.name || connection.accountName;
-			connection.accountNumber =
-				accountData.accountNumber || connection.accountNumber;
-			connection.bankName =
-				accountData.institution?.name || connection.bankName;
-			connection.balance = accountData.balance ?? connection.balance;
-			connection.currency = accountData.currency || connection.currency;
-			connection.bvn = accountData.bvn || connection.bvn;
-			connection.status = "Active";
-			connection.lastSync = new Date();
-
-			await connection.save();
-			console.log("✅ account_updated saved for account:", accountId);
 			console.log("   Account Name:", connection.accountName);
 			console.log("   Account Number:", connection.accountNumber);
 			console.log("   Bank:", connection.bankName);
@@ -111,22 +144,23 @@ router.post("/webhook", async (req, res) => {
 
 			const accountData = payload.account || payload;
 			if (!accountData || !accountData._id) {
-				console.log(
-					"⚠️ No account data in payload:",
-					JSON.stringify(payload, null, 2),
-				);
+				console.log("⚠️ No account data in payload");
 				return;
 			}
 
 			const accountId = accountData._id;
 
-			const connection = await BankConnection.findOne({
+			let connection = await BankConnection.findOne({
 				monoAccountId: accountId,
 			});
+
 			if (!connection) {
 				console.log(
-					"❌ Cannot update reauthorized: bank connection not found for account",
+					"⚠️ Cannot update reauthorized: bank connection not found for account",
 					accountId,
+				);
+				console.log(
+					"   This might be a new account that hasn't been processed yet",
 				);
 				return;
 			}
@@ -143,7 +177,6 @@ router.post("/webhook", async (req, res) => {
 		console.log("⚠️ Unknown event type:", eventType);
 	} catch (err) {
 		console.error("❌ Webhook error:", err);
-		// Don't throw error, just log it
 	}
 });
 
