@@ -17,47 +17,32 @@ export const initiateBankLink = async (req, res) => {
 		const randomStr = Math.random().toString(36).substring(2, 8);
 		const uniqueRef = `LINK_${timestamp}_${randomStr}`;
 
-		// Mono API expects either:
-		// 1. customer object for new customers
-		// 2. customer_id for existing customers (if they have one)
-		// But you CANNOT send both
-
-		let requestData = {
+		// For Mono, you always need to create a new customer
+		// The customer_id is for reference only, not for reusing
+		const requestData = {
+			customer: { name, email },
 			meta: { ref: uniqueRef },
 			scope: "auth",
 			redirect_url: "https://kuditrak.com/mono-redirect",
 		};
 
-		// Check if user already has a Mono customer ID
-		if (req.user.monoCustomerId) {
-			// For existing customers, use customer_id (not customer object)
-			requestData.customer_id = req.user.monoCustomerId;
-			console.log(
-				"Linking additional account for existing customer:",
-				req.user.monoCustomerId,
-			);
-		} else {
-			// For new customers, use customer object
-			requestData.customer = { name, email };
-			console.log("Creating new Mono customer");
-		}
+		console.log("Initiating Mono link with data:", requestData);
 
 		const response = await mono.post("/accounts/initiate", requestData);
 
 		console.log("Mono initiate response:", response.data);
 
-		// If this is a new customer, save the ID
-		if (!req.user.monoCustomerId && response.data.data.customer?.id) {
+		// Always save/update the customer ID
+		if (response.data.data.customer?.id) {
 			req.user.monoCustomerId = response.data.data.customer.id;
 			await req.user.save();
-			console.log("Saved new Mono customer ID:", req.user.monoCustomerId);
+			console.log("Saved Mono customer ID:", req.user.monoCustomerId);
 		}
 
 		res.status(200).json({
 			success: true,
 			monoUrl: response.data.data.mono_url,
-			monoCustomerId:
-				req.user.monoCustomerId || response.data.data.customer?.id,
+			monoCustomerId: req.user.monoCustomerId,
 			ref: uniqueRef,
 		});
 	} catch (err) {
@@ -66,7 +51,6 @@ export const initiateBankLink = async (req, res) => {
 			err.response?.data || err.message,
 		);
 
-		// Handle subscription limit error specifically
 		if (err.message.includes("Bank connection limit reached")) {
 			return res.status(403).json({
 				success: false,
@@ -75,18 +59,10 @@ export const initiateBankLink = async (req, res) => {
 			});
 		}
 
-		// Handle Mono API errors
-		if (err.response?.data) {
-			return res.status(500).json({
-				success: false,
-				error: err.response.data.message || "Failed to initiate bank linking",
-				details: err.response.data,
-			});
-		}
-
 		res.status(500).json({
 			success: false,
 			error: err.message || "Failed to initiate bank linking",
+			details: err.response?.data,
 		});
 	}
 };
