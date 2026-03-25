@@ -23,6 +23,57 @@ router.post("/webhook", async (req, res) => {
 			return;
 		}
 
+		// In the account_connected handler, before creating
+		if (eventType === "mono.events.account_connected") {
+			const accountId = payload.id;
+			const customerId = payload.customer;
+
+			console.log("🔄 Processing account_connected for account:", accountId);
+
+			const user = await User.findOne({ monoCustomerId: customerId });
+			if (!user) {
+				console.log("❌ User not found for monoCustomerId:", customerId);
+				return;
+			}
+
+			// Check if this account is already linked (including placeholder records)
+			let connection = await BankConnection.findOne({
+				monoAccountId: accountId,
+			});
+
+			if (connection) {
+				console.log("⚠️ Account already exists, updating status:", accountId);
+				connection.status = "Active";
+				connection.lastSync = new Date();
+				await connection.save();
+			} else {
+				// Create new connection - but only if it doesn't exist
+				// Also check if there's a record with this accountId from a previous recovery
+				const existingRecovery = await BankConnection.findOne({
+					monoAccountId: accountId,
+				});
+
+				if (!existingRecovery) {
+					connection = await BankConnection.create({
+						userId: user._id,
+						monoCustomerId: customerId,
+						monoAccountId: accountId,
+						status: "Active",
+						lastSync: new Date(),
+						provider: "mono",
+					});
+					console.log("✅ New connection created for account:", accountId);
+				} else {
+					console.log(
+						"⚠️ Account already exists from recovery, skipping creation",
+					);
+				}
+			}
+
+			console.log("   User ID:", user._id);
+			console.log("   User Email:", user.email);
+			return;
+		}
 		// ---------- ACCOUNT CONNECTED ----------
 		if (eventType === "mono.events.account_connected") {
 			const accountId = payload.id;
