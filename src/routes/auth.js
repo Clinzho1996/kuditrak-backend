@@ -5,6 +5,8 @@ import {
 	confirmOtp,
 	forgotPassword,
 	login,
+	resendResetOtp,
+	resendVerificationOtp,
 	resetPassword,
 	signup,
 	socialAuth,
@@ -30,6 +32,8 @@ router.post("/login", login);
 router.post("/social-auth", socialAuth);
 router.post("/forgot-password", forgotPassword);
 router.post("/verify-otp", verifyResetOtp);
+router.post("/resend-otp", resendVerificationOtp);
+router.post("/resend-reset-otp", resendResetOtp);
 router.post("/reset-password", resetPassword);
 
 // Step 3: Complete onboarding journey (after verification)

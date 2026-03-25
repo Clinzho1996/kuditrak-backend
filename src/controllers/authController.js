@@ -12,6 +12,21 @@ import { initializeDefaultCategories } from "./categoryController.js";
 const generateToken = (userId) =>
 	jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: "30d" });
 
+// Send OTP Email
+const sendOTPEmail = async (email, otp, type = "verify") => {
+	const subject =
+		type === "verify" ? "Verify Your Email" : "Password Reset OTP";
+	const message =
+		type === "verify"
+			? `<p>Your email verification OTP is <b>${otp}</b>. It expires in 10 minutes.</p>`
+			: `<p>Your password reset OTP is <b>${otp}</b>. It expires in 10 minutes.</p>`;
+
+	await sendEmail({
+		to: email,
+		subject,
+		html: message,
+	});
+};
 // Step 1: Signup
 // controllers/authController.js
 export const signup = async (req, res) => {
@@ -89,6 +104,66 @@ export const signup = async (req, res) => {
 	}
 };
 
+export const resendVerificationOtp = async (req, res) => {
+	try {
+		const { userId, email } = req.body;
+
+		if (!userId && !email) {
+			return res.status(400).json({
+				success: false,
+				message: "Either userId or email is required",
+				code: "MISSING_FIELDS",
+			});
+		}
+
+		let user;
+
+		if (userId) {
+			user = await User.findById(userId);
+		} else if (email) {
+			user = await User.findOne({ email });
+		}
+
+		if (!user) {
+			return res.status(404).json({
+				success: false,
+				message: "User not found",
+				code: "USER_NOT_FOUND",
+			});
+		}
+
+		if (user.isVerified) {
+			return res.status(400).json({
+				success: false,
+				message: "Account already verified",
+				code: "ALREADY_VERIFIED",
+			});
+		}
+
+		// Generate new OTP
+		const otp = generateOTP();
+		console.log("Resending OTP to:", user.email, "OTP:", otp);
+
+		user.otp = otp;
+		user.otpExpires = Date.now() + 10 * 60 * 1000; // 10 min expiry
+		await user.save();
+
+		// Send email
+		await sendOTPEmail(user.email, otp, "verify");
+
+		res.status(200).json({
+			success: true,
+			message: "Verification code resent successfully",
+		});
+	} catch (err) {
+		console.error("Resend OTP error:", err);
+		res.status(500).json({
+			success: false,
+			message: "Unable to resend verification code. Please try again.",
+			code: "RESEND_FAILED",
+		});
+	}
+};
 // Step 2: Confirm OTP
 export const confirmOtp = async (req, res) => {
 	try {
@@ -212,6 +287,52 @@ export const verifyResetOtp = async (req, res) => {
 	}
 };
 
+// Resend Password Reset OTP
+export const resendResetOtp = async (req, res) => {
+	try {
+		const { email } = req.body;
+
+		if (!email) {
+			return res.status(400).json({
+				success: false,
+				message: "Email is required",
+				code: "EMAIL_REQUIRED",
+			});
+		}
+
+		const user = await User.findOne({ email });
+		if (!user) {
+			return res.status(404).json({
+				success: false,
+				message: "No account found with this email",
+				code: "USER_NOT_FOUND",
+			});
+		}
+
+		// Generate new OTP
+		const otp = generateOTP();
+
+		user.resetOtp = otp;
+		user.resetOtpExpires = Date.now() + 10 * 60 * 1000; // 10 mins
+		user.resetOtpVerified = false;
+		await user.save();
+
+		// Send email
+		await sendOTPEmail(email, otp, "reset");
+
+		res.status(200).json({
+			success: true,
+			message: "Reset OTP resent successfully",
+		});
+	} catch (err) {
+		console.error("Resend reset OTP error:", err);
+		res.status(500).json({
+			success: false,
+			message: "Unable to resend reset code. Please try again.",
+			code: "RESEND_FAILED",
+		});
+	}
+};
 // Reset Password (after OTP verification)
 export const resetPassword = async (req, res) => {
 	try {
