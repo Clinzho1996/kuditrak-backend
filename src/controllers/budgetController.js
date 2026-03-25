@@ -11,7 +11,18 @@ export const createBudget = async (req, res) => {
 	try {
 		const { name, amount, frequency, startDate, endDate } = req.body;
 
+		console.log("Creating budget for user:", req.user._id);
+		console.log("Budget data:", {
+			name,
+			amount,
+			frequency,
+			startDate,
+			endDate,
+		});
+
+		// Check limits - this will throw if limit is reached
 		await checkLimits(req.user._id, "budget");
+
 		const budget = await Budget.create({
 			userId: req.user._id,
 			name,
@@ -21,9 +32,38 @@ export const createBudget = async (req, res) => {
 			endDate,
 		});
 
-		res.status(201).json({ success: true, budget });
+		console.log("Budget created successfully:", budget._id);
+
+		res.status(201).json({
+			success: true,
+			budget,
+			message: "Budget created successfully",
+		});
 	} catch (err) {
-		res.status(500).json({ error: err.message });
+		console.error("Create budget error:", err.message);
+
+		// Check if it's a limit error
+		if (err.message.includes("limit reached")) {
+			// Extract the limit from the error message
+			const match = err.message.match(/(\d+)/);
+			const limit = match ? parseInt(match[0]) : null;
+
+			return res.status(403).json({
+				success: false,
+				message: err.message,
+				code: "LIMIT_EXCEEDED",
+				limitType: "budgets",
+				limit: limit,
+				plan: req.user?.subscription?.plan || "free",
+			});
+		}
+
+		// Handle other errors
+		res.status(500).json({
+			success: false,
+			message: err.message || "Failed to create budget",
+			code: "CREATE_FAILED",
+		});
 	}
 };
 
@@ -239,7 +279,8 @@ export const getTotalBudgetInsights = async (req, res) => {
 		}
 
 		const totalRemaining = totalBudget - totalSpent;
-		const overallPercentage = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
+		const overallPercentage =
+			totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
 
 		// Determine overall status
 		let status = "safe";
