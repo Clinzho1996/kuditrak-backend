@@ -128,3 +128,81 @@ export const getUserBankAccounts = async (req, res) => {
 		res.status(500).json({ success: false, error: err.message });
 	}
 };
+
+// Add this to your monoController.js
+export const syncMissingAccounts = async (req, res) => {
+	try {
+		const user = await User.findById(req.user._id);
+		if (!user.monoCustomerId) {
+			return res.status(400).json({
+				success: false,
+				error: "No Mono customer ID found for this user",
+			});
+		}
+
+		// Fetch all accounts for this customer from Mono
+		const response = await mono.get(
+			`/customers/${user.monoCustomerId}/accounts`,
+		);
+		const accounts = response.data.data;
+
+		const syncedAccounts = [];
+		const errors = [];
+
+		for (const account of accounts) {
+			try {
+				// Check if account already exists
+				let connection = await BankConnection.findOne({
+					monoAccountId: account.id,
+				});
+
+				if (!connection) {
+					// Create new connection
+					connection = await BankConnection.create({
+						userId: user._id,
+						monoCustomerId: user.monoCustomerId,
+						monoAccountId: account.id,
+						accountName: account.name,
+						accountNumber: account.account_number,
+						bankName: account.institution?.name,
+						balance: account.balance,
+						currency: account.currency,
+						bvn: account.bvn,
+						status: "Active",
+						lastSync: new Date(),
+						provider: "mono",
+					});
+					syncedAccounts.push(connection);
+				} else {
+					// Update existing connection
+					connection.accountName = account.name || connection.accountName;
+					connection.accountNumber =
+						account.account_number || connection.accountNumber;
+					connection.bankName =
+						account.institution?.name || connection.bankName;
+					connection.balance = account.balance ?? connection.balance;
+					connection.currency = account.currency || connection.currency;
+					connection.bvn = account.bvn || connection.bvn;
+					connection.lastSync = new Date();
+					await connection.save();
+					syncedAccounts.push(connection);
+				}
+			} catch (err) {
+				errors.push({ account: account.id, error: err.message });
+			}
+		}
+
+		res.status(200).json({
+			success: true,
+			message: `Synced ${syncedAccounts.length} accounts`,
+			syncedAccounts,
+			errors,
+		});
+	} catch (err) {
+		console.error("Sync missing accounts error:", err.message);
+		res.status(500).json({
+			success: false,
+			error: err.message,
+		});
+	}
+};
