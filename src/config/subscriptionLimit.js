@@ -7,7 +7,7 @@ export const LIMITS = {
 		savingBuckets: 3, // Added saving buckets limit
 	},
 	basic: {
-		manualTransactions: 50,
+		manualTransactions: 25,
 		bankConnections: 3,
 		budgets: 10,
 		savingBuckets: 10, // Added saving buckets limit
