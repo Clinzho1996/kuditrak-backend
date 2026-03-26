@@ -6,6 +6,8 @@ import {
 	linkBankAccount,
 	saveMonoCustomerId,
 	syncMissingAccounts,
+	unlinkAllBankAccounts,
+	unlinkBankAccount,
 } from "../controllers/bankController.js";
 import { pullMonoTransactions } from "../controllers/transactionController.js";
 import protect from "../middleware/auth.js";
@@ -18,6 +20,11 @@ router.post("/initiate", protect, initiateBankLink);
 
 router.get("/", protect, getUserBankAccounts);
 router.get("/sync", protect, syncMissingAccounts);
+// Unlink a specific bank account
+router.delete("/account/:accountId", protect, unlinkBankAccount);
+
+// Unlink all bank accounts
+router.delete("/accounts/all", protect, unlinkAllBankAccounts);
 router.get("/:accountId/transactions", protect, pullMonoTransactions);
 
 export default router;

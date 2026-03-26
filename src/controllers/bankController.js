@@ -248,3 +248,98 @@ export const syncMissingAccounts = async (req, res) => {
 		});
 	}
 };
+
+/**
+ * Unlink (delete) a bank account
+ * Removes the bank connection from the database
+ */
+export const unlinkBankAccount = async (req, res) => {
+	try {
+		const { accountId } = req.params;
+
+		if (!accountId) {
+			return res.status(400).json({
+				success: false,
+				error: "Account ID is required",
+			});
+		}
+
+		// Find and verify the account belongs to the user
+		const account = await BankConnection.findOne({
+			_id: accountId,
+			userId: req.user._id,
+		});
+
+		if (!account) {
+			return res.status(404).json({
+				success: false,
+				error: "Bank account not found",
+			});
+		}
+
+		// Optional: Check if the account has any transactions before unlinking
+		const Transaction = await import("../models/Transaction.js").then(
+			(m) => m.default,
+		);
+		const transactionCount = await Transaction.countDocuments({
+			bankConnectionId: account._id,
+		});
+
+		if (transactionCount > 0) {
+			// Option 1: Soft delete - mark as inactive instead of deleting
+			account.status = "Inactive";
+			await account.save();
+
+			return res.status(200).json({
+				success: true,
+				message: `Bank account unlinked successfully. ${transactionCount} transactions will remain in your history.`,
+				account: {
+					_id: account._id,
+					bankName: account.bankName,
+					accountNumber: account.accountNumber,
+					status: account.status,
+				},
+			});
+		}
+
+		// No transactions - hard delete
+		await account.deleteOne();
+
+		res.status(200).json({
+			success: true,
+			message: `Bank account (${account.bankName} - ${account.accountNumber}) unlinked successfully.`,
+			accountId: account._id,
+		});
+	} catch (err) {
+		console.error("Unlink bank account error:", err.message);
+		res.status(500).json({
+			success: false,
+			error: err.message || "Failed to unlink bank account",
+		});
+	}
+};
+
+/**
+ * Unlink all bank accounts for a user
+ * Useful for account deletion or cleanup
+ */
+export const unlinkAllBankAccounts = async (req, res) => {
+	try {
+		const result = await BankConnection.updateMany(
+			{ userId: req.user._id, status: "Active" },
+			{ $set: { status: "Inactive", lastSync: new Date() } },
+		);
+
+		res.status(200).json({
+			success: true,
+			message: `${result.modifiedCount} bank account(s) unlinked successfully`,
+			count: result.modifiedCount,
+		});
+	} catch (err) {
+		console.error("Unlink all bank accounts error:", err.message);
+		res.status(500).json({
+			success: false,
+			error: err.message || "Failed to unlink bank accounts",
+		});
+	}
+};
