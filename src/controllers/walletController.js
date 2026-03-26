@@ -1,12 +1,20 @@
 import axios from "axios";
-import mongoose from "mongoose";
-import SavingsBucket from "../models/SavingsBucket.js";
-import Transaction from "../models/Transaction.js";
-import Wallet from "../models/Wallet.js";
-import { initiatePayout } from "../services/paymentGateway.js";
 
 import { sendTopUpNotification } from "../services/notificationService.js";
 import { createTopUp } from "../services/paymentGateway.js";
+
+import mongoose from "mongoose";
+import BankConnection from "../models/BankConnection.js";
+import Transaction from "../models/Transaction.js";
+import Wallet from "../models/Wallet.js";
+import {
+	sendLowBalanceNotification,
+	sendWithdrawalNotification,
+} from "../services/notificationService.js";
+import {
+	getOrCreateRecipient,
+	initiatePayout,
+} from "../services/paymentGateway.js";
 
 // backend/controllers/walletController.js
 export const topUpWallet = async (req, res) => {
@@ -271,7 +279,8 @@ export const getBalance = async (req, res) => {
 	});
 };
 
-// backend/controllers/walletController.js - Update withdrawToBank
+// backend/controllers/walletController.js
+
 export const withdrawToBank = async (req, res) => {
 	const { amount, bankAccountId } = req.body;
 
@@ -303,7 +312,7 @@ export const withdrawToBank = async (req, res) => {
 			throw new Error("Bank account not found");
 		}
 
-		// Check if it's a valid bank for withdrawal
+		// Check if this bank supports withdrawals
 		const allowedBanks = [
 			"GTBank",
 			"Access Bank",
@@ -320,20 +329,37 @@ export const withdrawToBank = async (req, res) => {
 			"Ecobank",
 		];
 
-		const isAllowedBank = allowedBanks.some((bank) =>
-			bankAccount.bankName.toLowerCase().includes(bank.toLowerCase()),
+		const isAllowedBank = allowedBanks.some(
+			(bank) =>
+				bankAccount.bankName &&
+				bankAccount.bankName.toLowerCase().includes(bank.toLowerCase()),
 		);
 
 		if (!isAllowedBank) {
 			throw new Error(
-				`Withdrawals to ${bankAccount.bankName} are not supported. Please link a traditional Nigerian bank account (GTBank, Access, UBA, etc.) for withdrawals.`,
+				`Withdrawals to ${bankAccount.bankName || "this bank"} are not supported. Please link a traditional Nigerian bank account (GTBank, Access, UBA, etc.) for withdrawals.`,
 			);
 		}
 
 		// Check if we have bank code
 		if (!bankAccount.bankCode || bankAccount.bankCode === "000000") {
 			throw new Error(
-				`Bank code not found for ${bankAccount.bankName}. Please link a different bank account.`,
+				`Bank code not found for ${bankAccount.bankName || "this bank"}. Please contact support.`,
+			);
+		}
+
+		// Get or create recipient code in Paystack
+		let recipientResult;
+		try {
+			recipientResult = await getOrCreateRecipient(bankAccount);
+		} catch (recipientError) {
+			console.error("Failed to get/create recipient:", recipientError);
+			throw new Error("Unable to process withdrawal. Please try again later.");
+		}
+
+		if (!recipientResult.success) {
+			throw new Error(
+				recipientResult.message || "Failed to create withdrawal recipient",
 			);
 		}
 
@@ -343,6 +369,7 @@ export const withdrawToBank = async (req, res) => {
 			amount: Number(amount),
 			userId: req.user._id,
 			bankAccountId,
+			recipientCode: recipientResult.recipientCode,
 			reference: payoutReference,
 		});
 
@@ -372,6 +399,8 @@ export const withdrawToBank = async (req, res) => {
 						bankName: bankAccount.bankName,
 						accountNumber: bankAccount.accountNumber,
 						reference: payoutReference,
+						recipientCode: recipientResult.recipientCode,
+						transferCode: payoutResult.transferCode,
 					},
 				},
 			],
@@ -380,6 +409,17 @@ export const withdrawToBank = async (req, res) => {
 
 		await session.commitTransaction();
 		session.endSession();
+
+		// Send notification (don't await, fire and forget)
+		try {
+			await sendWithdrawalNotification(req.user._id, amount, wallet.balance);
+
+			if (wallet.balance < 10000) {
+				await sendLowBalanceNotification(req.user._id, wallet.balance);
+			}
+		} catch (notifError) {
+			console.error("Notification error:", notifError);
+		}
 
 		res.status(200).json({
 			success: true,
@@ -391,6 +431,11 @@ export const withdrawToBank = async (req, res) => {
 	} catch (err) {
 		await session.abortTransaction();
 		session.endSession();
-		res.status(400).json({ error: err.message });
+		console.error("Withdrawal error:", err.message);
+		res.status(400).json({
+			success: false,
+			message: err.message,
+			error: err.message,
+		});
 	}
 };
