@@ -33,8 +33,8 @@ export const initiateBankLink = async (req, res) => {
 		console.log("Mono initiate response:", response.data);
 
 		// Always save/update the customer ID
-		if (response.data.data.customer?.id) {
-			req.user.monoCustomerId = response.data.data.customer.id;
+		if (response.data.data.customer) {
+			req.user.monoCustomerId = response.data.data.customer;
 			await req.user.save();
 			console.log("Saved Mono customer ID:", req.user.monoCustomerId);
 		}
