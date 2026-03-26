@@ -17,7 +17,7 @@ const bankConnectionSchema = new mongoose.Schema({
 
 	status: {
 		type: String,
-		enum: ["Active", "Inactive"],
+		enum: ["Active", "Inactive" | "Processing"],
 		default: "Active",
 	},
 
