@@ -423,41 +423,176 @@ export const getTransactionHistory = async (req, res) => {
 export const pullMonoTransactions = async (req, res) => {
 	try {
 		const { accountId } = req.params;
+		const { page = 1, perPage = 50 } = req.query;
 
+		console.log("Pulling transactions for account:", accountId);
+		console.log(`Page: ${page}, Per Page: ${perPage}`);
+
+		// Find the bank connection
 		const connection = await BankConnection.findOne({
 			monoAccountId: accountId,
 		});
+
 		if (!connection) {
 			return res
 				.status(404)
 				.json({ success: false, error: "Bank account not found" });
 		}
 
-		const response = await mono.get(`/accounts/${accountId}/transactions`);
-		const transactions = response.data.data;
+		// Fetch transactions from Mono with pagination
+		const response = await mono.get(
+			`/accounts/${accountId}/transactions?page=${page}&perPage=${perPage}`,
+		);
 
+		const transactions = response.data.data;
+		const meta = response.data.meta;
+
+		console.log(`Found ${transactions?.length || 0} transactions`);
+		console.log(
+			`Total: ${meta?.total}, Page: ${meta?.page}/${Math.ceil(meta?.total / perPage)}`,
+		);
+
+		let savedCount = 0;
+		let updatedCount = 0;
+
+		// Process and save transactions
 		for (const tx of transactions) {
-			await Transaction.updateOne(
-				{ transactionId: tx._id },
-				{
-					userId: connection.userId,
-					bankConnectionId: connection._id,
-					amount: tx.amount,
-					description: tx.narration,
-					type: tx.type === "debit" ? "expense" : "income",
-					date: tx.date,
-					source: "bank",
+			const transactionData = {
+				userId: connection.userId,
+				bankConnectionId: connection._id,
+				transactionId: tx.id,
+				amount: Math.abs(tx.amount),
+				description: tx.narration || tx.description || "Mono Transaction",
+				type: tx.type === "debit" ? "expense" : "income",
+				date: tx.date ? new Date(tx.date) : new Date(),
+				source: "bank",
+				status: "Completed",
+				currency: tx.currency || "NGN",
+				balance: tx.balance,
+				category: tx.category,
+				metadata: {
+					monoId: tx.id,
+					originalType: tx.type,
+					narration: tx.narration,
 				},
+			};
+
+			const result = await Transaction.updateOne(
+				{ transactionId: tx.id },
+				{ $set: transactionData },
 				{ upsert: true },
 			);
+
+			if (result.upsertedCount > 0) {
+				savedCount++;
+			} else if (result.modifiedCount > 0) {
+				updatedCount++;
+			}
 		}
 
-		res.json({ success: true, count: transactions.length });
+		// Update last sync time
+		connection.lastSync = new Date();
+		await connection.save();
+
+		res.json({
+			success: true,
+			page: meta?.page,
+			total: meta?.total,
+			count: transactions.length,
+			saved: savedCount,
+			updated: updatedCount,
+			hasNext: !!meta?.next,
+			nextPage: meta?.next ? meta.page + 1 : null,
+			transactions,
+		});
 	} catch (err) {
 		console.error(
 			"Error pulling Mono transactions:",
 			err.response?.data || err.message,
 		);
-		res.status(500).json({ success: false, error: err.message });
+		res.status(500).json({
+			success: false,
+			error: err.message,
+			details: err.response?.data,
+		});
+	}
+};
+
+// Add endpoint to fetch all transactions (handles pagination automatically)
+export const pullAllMonoTransactions = async (req, res) => {
+	try {
+		const { accountId } = req.params;
+
+		const connection = await BankConnection.findOne({
+			monoAccountId: accountId,
+		});
+
+		if (!connection) {
+			return res
+				.status(404)
+				.json({ success: false, error: "Bank account not found" });
+		}
+
+		let allTransactions = [];
+		let page = 1;
+		let hasMore = true;
+
+		while (hasMore) {
+			console.log(`Fetching page ${page}...`);
+
+			const response = await mono.get(
+				`/accounts/${accountId}/transactions?page=${page}&perPage=50`,
+			);
+
+			const transactions = response.data.data;
+			const meta = response.data.meta;
+
+			if (transactions && transactions.length > 0) {
+				allTransactions = [...allTransactions, ...transactions];
+			}
+
+			hasMore = !!meta?.next;
+			page++;
+		}
+
+		console.log(`Total transactions fetched: ${allTransactions.length}`);
+
+		// Save all transactions
+		for (const tx of allTransactions) {
+			await Transaction.updateOne(
+				{ transactionId: tx.id },
+				{
+					$set: {
+						userId: connection.userId,
+						bankConnectionId: connection._id,
+						transactionId: tx.id,
+						amount: Math.abs(tx.amount),
+						description: tx.narration || tx.description,
+						type: tx.type === "debit" ? "expense" : "income",
+						date: tx.date ? new Date(tx.date) : new Date(),
+						source: "bank",
+						status: "Completed",
+						currency: tx.currency || "NGN",
+						balance: tx.balance,
+					},
+				},
+				{ upsert: true },
+			);
+		}
+
+		connection.lastSync = new Date();
+		await connection.save();
+
+		res.json({
+			success: true,
+			total: allTransactions.length,
+			message: `Synced ${allTransactions.length} transactions`,
+		});
+	} catch (err) {
+		console.error("Error pulling all Mono transactions:", err.message);
+		res.status(500).json({
+			success: false,
+			error: err.message,
+		});
 	}
 };
