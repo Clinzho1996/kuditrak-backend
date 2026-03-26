@@ -5,10 +5,7 @@ import Transaction from "../models/Transaction.js";
 import Wallet from "../models/Wallet.js";
 import { initiatePayout } from "../services/paymentGateway.js";
 
-import {
-	sendTopUpNotification,
-	sendWithdrawalNotification,
-} from "../services/notificationService.js";
+import { sendTopUpNotification } from "../services/notificationService.js";
 import { createTopUp } from "../services/paymentGateway.js";
 
 // backend/controllers/walletController.js
@@ -274,6 +271,7 @@ export const getBalance = async (req, res) => {
 	});
 };
 
+// backend/controllers/walletController.js - Update withdrawToBank
 export const withdrawToBank = async (req, res) => {
 	const { amount, bankAccountId } = req.body;
 
@@ -294,6 +292,51 @@ export const withdrawToBank = async (req, res) => {
 			throw new Error("Insufficient available balance");
 		}
 
+		// Get bank account
+		const bankAccount = await BankConnection.findOne({
+			_id: bankAccountId,
+			userId: req.user._id,
+			status: "Active",
+		}).session(session);
+
+		if (!bankAccount) {
+			throw new Error("Bank account not found");
+		}
+
+		// Check if it's a valid bank for withdrawal
+		const allowedBanks = [
+			"GTBank",
+			"Access Bank",
+			"Wema Bank",
+			"UBA",
+			"First Bank",
+			"Zenith Bank",
+			"FCMB",
+			"Stanbic IBTC",
+			"Polaris Bank",
+			"Union Bank of Nigeria",
+			"Fidelity Bank",
+			"Sterling Bank",
+			"Ecobank",
+		];
+
+		const isAllowedBank = allowedBanks.some((bank) =>
+			bankAccount.bankName.toLowerCase().includes(bank.toLowerCase()),
+		);
+
+		if (!isAllowedBank) {
+			throw new Error(
+				`Withdrawals to ${bankAccount.bankName} are not supported. Please link a traditional Nigerian bank account (GTBank, Access, UBA, etc.) for withdrawals.`,
+			);
+		}
+
+		// Check if we have bank code
+		if (!bankAccount.bankCode || bankAccount.bankCode === "000000") {
+			throw new Error(
+				`Bank code not found for ${bankAccount.bankName}. Please link a different bank account.`,
+			);
+		}
+
 		// Initiate payout to bank account
 		const payoutReference = `PAYOUT-${req.user._id}-${Date.now()}`;
 		const payoutResult = await initiatePayout({
@@ -304,7 +347,7 @@ export const withdrawToBank = async (req, res) => {
 		});
 
 		if (!payoutResult.success) {
-			throw new Error("Payout failed: " + payoutResult.message);
+			throw new Error(payoutResult.message);
 		}
 
 		// Deduct from wallet
@@ -322,26 +365,24 @@ export const withdrawToBank = async (req, res) => {
 					type: "expense",
 					amount: Number(amount),
 					status: "Completed",
-					description: "Withdrawal to bank account",
+					description: `Withdrawal to ${bankAccount.bankName} - ${bankAccount.accountNumber}`,
 					source: "wallet",
-					metadata: { bankAccountId, reference: payoutReference },
+					metadata: {
+						bankAccountId,
+						bankName: bankAccount.bankName,
+						accountNumber: bankAccount.accountNumber,
+						reference: payoutReference,
+					},
 				},
 			],
 			{ session },
 		);
 
-		// After withdrawal
-		await sendWithdrawalNotification(req.user._id, amount, wallet.balance);
-
-		// Check if balance is low (less than 10% of average spending or threshold)
-		if (wallet.balance < 10000) {
-			await sendLowBalanceNotification(req.user._id, wallet.balance);
-		}
-
 		await session.commitTransaction();
 		session.endSession();
 
 		res.status(200).json({
+			success: true,
 			message: "Withdrawal successful",
 			amount,
 			balance: wallet.balance,
