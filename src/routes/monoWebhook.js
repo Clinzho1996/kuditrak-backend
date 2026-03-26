@@ -6,6 +6,57 @@ import mono from "../services/monoService.js";
 
 const router = express.Router();
 
+// Helper function to get bank code from bank name
+const getBankCode = (bankName) => {
+	if (!bankName) return null;
+
+	const bankCodes = {
+		GTBank: "058",
+		"Guaranty Trust Bank": "058",
+		"Access Bank": "044",
+		"Access Bank Plc": "044",
+		"Wema Bank": "035",
+		"Wema Bank Plc": "035",
+		UBA: "033",
+		"United Bank For Africa": "033",
+		"First Bank": "011",
+		"First Bank of Nigeria": "011",
+		"Zenith Bank": "057",
+		"Zenith Bank Plc": "057",
+		FCMB: "214",
+		"First City Monument Bank": "214",
+		"Stanbic IBTC": "039",
+		"Stanbic IBTC Bank": "039",
+		"Polaris Bank": "076",
+		"Polaris Bank Limited": "076",
+		"Union Bank of Nigeria": "032",
+		"Union Bank": "032",
+		"Fidelity Bank": "070",
+		"Fidelity Bank Plc": "070",
+		"Sterling Bank": "232",
+		"Sterling Bank Plc": "232",
+		Ecobank: "050",
+		"Ecobank Nigeria": "050",
+		"Kuda Bank": "50211",
+		"Kuda Microfinance Bank": "50211",
+	};
+
+	// Try exact match first
+	if (bankCodes[bankName]) return bankCodes[bankName];
+
+	// Try partial match
+	for (const [key, code] of Object.entries(bankCodes)) {
+		if (
+			bankName.toLowerCase().includes(key.toLowerCase()) ||
+			key.toLowerCase().includes(bankName.toLowerCase())
+		) {
+			return code;
+		}
+	}
+
+	return null;
+};
+
 // Helper function to safely create/update connection with retry logic
 async function safeUpsertConnection(accountId, updateData) {
 	try {
@@ -15,7 +66,7 @@ async function safeUpsertConnection(accountId, updateData) {
 			{ $set: updateData },
 			{
 				new: true,
-				upsert: false, // Don't upsert here, we'll handle creation separately
+				upsert: false,
 				runValidators: true,
 			},
 		);
@@ -24,7 +75,7 @@ async function safeUpsertConnection(accountId, updateData) {
 			return connection;
 		}
 
-		// If not found, try to create with unique index handling
+		// If not found, try to create
 		try {
 			const newConnection = await BankConnection.create({
 				monoAccountId: accountId,
@@ -92,7 +143,7 @@ router.post("/webhook", async (req, res) => {
 			if (connection) {
 				console.log("⚠️ Account already exists, updating status:", accountId);
 				await safeUpsertConnection(accountId, {
-					status: "Active",
+					status: "Processing",
 					lastSync: new Date(),
 					userId: user._id,
 					monoCustomerId: customerId,
@@ -127,56 +178,84 @@ router.post("/webhook", async (req, res) => {
 
 			const accountId = accountData._id;
 
-			// Add a small delay to prevent race conditions
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			// Extract data from the webhook payload
+			const accountName = accountData.name;
+			const accountNumber = accountData.accountNumber;
+			const bankName = accountData.institution?.name;
+			const bankCodeFromMono = accountData.institution?.bankCode;
+			const balance = accountData.balance;
+			const currency = accountData.currency;
+			const bvn = accountData.bvn;
+			const customerId = accountData.customer || payload.customer;
 
-			try {
-				// Fetch full account details from Mono API to get all data
-				const monoResponse = await mono.get(`/accounts/${accountId}`);
-				const fullAccount = monoResponse.data.data;
-				const customerId = fullAccount.customer?.id;
+			console.log(`📋 Account Details from webhook:`);
+			console.log(`   Account Name: ${accountName}`);
+			console.log(`   Account Number: ${accountNumber}`);
+			console.log(`   Bank Name: ${bankName}`);
+			console.log(`   Bank Code from Mono: ${bankCodeFromMono}`);
+			console.log(`   Balance: ${balance}`);
+			console.log(`   BVN: ${bvn}`);
 
-				if (!customerId) {
-					console.log("❌ Could not retrieve customer ID from Mono API");
-					return;
-				}
-
-				// Find the user
-				const user = await User.findOne({ monoCustomerId: customerId });
-				if (!user) {
-					console.log("❌ No user found with monoCustomerId:", customerId);
-					return;
-				}
-
-				// Prepare update data with ALL account details
-				const updateData = {
-					userId: user._id,
-					monoCustomerId: customerId,
-					accountName: accountData.name || fullAccount.name,
-					accountNumber:
-						accountData.accountNumber || fullAccount.account_number,
-					bankName:
-						accountData.institution?.name || fullAccount.institution?.name,
-					balance: accountData.balance ?? fullAccount.balance,
-					currency: accountData.currency || fullAccount.currency,
-					bvn: accountData.bvn || fullAccount.bvn,
-					status: "Active",
-					lastSync: new Date(),
-					provider: "mono",
-				};
-
-				// Use safe upsert to handle race conditions
-				const connection = await safeUpsertConnection(accountId, updateData);
-
-				console.log("✅ Account updated successfully:");
-				console.log("   Account ID:", accountId);
-				console.log("   Account Name:", connection.accountName);
-				console.log("   Account Number:", connection.accountNumber);
-				console.log("   Bank:", connection.bankName);
-				console.log("   Balance:", connection.balance);
-			} catch (error) {
-				console.error("❌ Error processing account_updated:", error);
+			// Find the user by monoCustomerId
+			let user = null;
+			if (customerId) {
+				user = await User.findOne({ monoCustomerId: customerId });
 			}
+
+			// If no user found by monoCustomerId, try to find by any existing connection
+			if (!user) {
+				const existingConnection = await BankConnection.findOne({
+					monoAccountId: accountId,
+				});
+				if (existingConnection && existingConnection.userId) {
+					user = await User.findById(existingConnection.userId);
+				}
+			}
+
+			if (!user) {
+				console.log("❌ No user found for this account");
+				return;
+			}
+
+			// Get bank code (use Mono's bankCode if available, otherwise map from bank name)
+			let bankCode = bankCodeFromMono;
+			if (!bankCode || bankCode === "000000") {
+				bankCode = getBankCode(bankName);
+				console.log(`   Mapped Bank Code: ${bankCode}`);
+			}
+
+			// Prepare update data with ALL account details
+			const updateData = {
+				userId: user._id,
+				monoCustomerId: customerId || user.monoCustomerId,
+				accountName: accountName,
+				accountNumber: accountNumber,
+				bankName: bankName,
+				bankCode: bankCode, // IMPORTANT: Save the bank code
+				balance: balance || 0,
+				currency: currency || "NGN",
+				bvn: bvn,
+				status: "Active",
+				lastSync: new Date(),
+				provider: "mono",
+			};
+
+			console.log(`📝 Updating account with:`);
+			console.log(`   Bank Name: ${updateData.bankName}`);
+			console.log(`   Bank Code: ${updateData.bankCode}`);
+			console.log(`   Account: ${updateData.accountNumber}`);
+
+			// Use safe upsert to handle race conditions
+			const connection = await safeUpsertConnection(accountId, updateData);
+
+			console.log("✅ Account updated successfully:");
+			console.log("   Account ID:", accountId);
+			console.log("   Account Name:", connection.accountName);
+			console.log("   Account Number:", connection.accountNumber);
+			console.log("   Bank:", connection.bankName);
+			console.log("   Bank Code:", connection.bankCode);
+			console.log("   Balance:", connection.balance);
+			console.log("   Status:", connection.status);
 			return;
 		}
 
@@ -219,12 +298,15 @@ router.post("/webhook", async (req, res) => {
 						const user = await User.findOne({ monoCustomerId: customerId });
 
 						if (user) {
+							const bankCode = getBankCode(fullAccount.institution?.name);
+
 							const updateData = {
 								userId: user._id,
 								monoCustomerId: customerId,
 								accountName: fullAccount.name,
 								accountNumber: fullAccount.account_number,
 								bankName: fullAccount.institution?.name,
+								bankCode: bankCode,
 								balance: fullAccount.balance,
 								currency: fullAccount.currency,
 								bvn: fullAccount.bvn,
@@ -239,6 +321,7 @@ router.post("/webhook", async (req, res) => {
 								accountId,
 							);
 							console.log("   User ID:", user._id);
+							console.log("   Bank Code:", bankCode);
 						} else {
 							console.log("❌ No user found for reauthorization recovery");
 							return;
@@ -250,6 +333,7 @@ router.post("/webhook", async (req, res) => {
 					connection.lastSync = new Date();
 					await connection.save();
 					console.log("✅ Account reauthorized and updated:", accountId);
+					console.log("   Bank Code:", connection.bankCode);
 				}
 			} catch (error) {
 				console.error("❌ Error processing reauthorization:", error);
