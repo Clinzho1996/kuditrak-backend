@@ -15,18 +15,18 @@ const bankConnectionSchema = new mongoose.Schema(
 
 		accountName: {
 			type: String,
-			required: true,
+			required: true, // Keep required - we'll use placeholders
 		},
 		accountNumber: {
 			type: String,
-			required: true,
+			required: true, // Keep required - we'll use placeholders
 		},
 		bankName: {
 			type: String,
-			required: true,
+			required: true, // Keep required - we'll use placeholders
 		},
 		bankCode: {
-			type: String, // Paystack bank code for the bank
+			type: String,
 			default: null,
 		},
 
@@ -34,14 +34,13 @@ const bankConnectionSchema = new mongoose.Schema(
 		monoAccountId: {
 			type: String,
 			unique: true,
-			sparse: true, // Allow null values
+			sparse: true,
 		},
 
-		// Paystack recipient code for withdrawals
 		recipientCode: {
 			type: String,
 			default: null,
-			index: true, // Index for faster lookups
+			index: true,
 		},
 
 		balance: {
@@ -52,11 +51,15 @@ const bankConnectionSchema = new mongoose.Schema(
 			type: String,
 			default: "NGN",
 		},
+		bvn: {
+			type: String,
+			default: null,
+		},
 
 		status: {
 			type: String,
 			enum: ["Active", "Inactive", "Processing", "Pending"],
-			default: "Active",
+			default: "Processing",
 		},
 
 		lastSync: {
@@ -64,18 +67,17 @@ const bankConnectionSchema = new mongoose.Schema(
 			default: null,
 		},
 
-		// Track when recipient was created
 		recipientCreatedAt: {
 			type: Date,
 			default: null,
 		},
 	},
 	{
-		timestamps: true, // Adds createdAt and updatedAt automatically
+		timestamps: true,
 	},
 );
 
-// Add indexes for common queries
+// Add indexes
 bankConnectionSchema.index({ userId: 1, status: 1 });
 bankConnectionSchema.index({ monoAccountId: 1 });
 bankConnectionSchema.index({ recipientCode: 1 });
