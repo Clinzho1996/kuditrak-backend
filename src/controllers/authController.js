@@ -455,30 +455,81 @@ export const completeOnboarding = async (req, res) => {
 export const login = async (req, res) => {
 	try {
 		const { email, password } = req.body;
+
+		// Validate input
+		if (!email || !password) {
+			return res.status(400).json({
+				success: false,
+				message: "Email and password are required",
+				code: "MISSING_FIELDS",
+			});
+		}
+
+		// Find user
 		const user = await User.findOne({ email });
-		if (!user) return res.status(400).json({ error: "Invalid credentials" });
 
+		// User not found - suggest account creation
+		if (!user) {
+			return res.status(404).json({
+				success: false,
+				message:
+					"No account found with this email address. Please create an account first.",
+				code: "USER_NOT_FOUND",
+				suggestSignup: true,
+			});
+		}
+
+		// Verify password
 		const isMatch = await bcrypt.compare(password, user.password);
-
 		if (!isMatch) {
 			return res.status(401).json({
 				success: false,
-				message: "Invalid email or password",
+				message: "Incorrect password. Please try again.",
 				code: "INVALID_CREDENTIALS",
+				remainingAttempts: "Reset password if you've forgotten",
 			});
 		}
 
+		// Check if email is verified
 		if (!user.isVerified) {
 			return res.status(403).json({
 				success: false,
-				message: "Please verify your email before logging in",
+				message:
+					"Please verify your email before logging in. A verification code was sent to your email.",
 				code: "EMAIL_NOT_VERIFIED",
+				email: user.email,
+				userId: user._id,
+				canResend: true,
 			});
 		}
+
+		// Successful login
 		const token = generateToken(user._id);
-		res.status(200).json({ token, user });
+
+		// Remove sensitive data
+		const userResponse = {
+			_id: user._id,
+			fullName: user.fullName,
+			email: user.email,
+			subscription: user.subscription,
+			onboardingCompleted: user.onboardingCompleted,
+			createdAt: user.createdAt,
+		};
+
+		res.status(200).json({
+			success: true,
+			message: "Login successful",
+			token,
+			user: userResponse,
+		});
 	} catch (err) {
-		res.status(500).json({ error: err.message });
+		console.error("Login error:", err.message);
+		res.status(500).json({
+			success: false,
+			message: "Unable to log in. Please try again later.",
+			code: "SERVER_ERROR",
+			error: err.message,
+		});
 	}
 };
 
