@@ -340,9 +340,88 @@ export const createNotification = async (req, res) => {
 	}
 };
 
+// backend/controllers/notificationController.js - Add this endpoint
+
 // ===============================
-// SEND BULK NOTIFICATION (Admin)
+// SEND PUSH TO ALL USERS (Admin)
 // ===============================
+// backend/controllers/notificationController.js
+export const sendPushToAllUsers = async (req, res) => {
+	try {
+		const { title, body, type, data } = req.body;
+
+		if (!title || !body) {
+			return res.status(400).json({
+				success: false,
+				error: "Title and body are required",
+			});
+		}
+
+		// Use valid enum values from your model
+		const validTypes = [
+			"system",
+			"budget_alert",
+			"savings_goal",
+			"subscription",
+			"transaction",
+			"investment",
+			"general",
+		];
+		const notificationType = validTypes.includes(type) ? type : "system";
+
+		// Find all users (not just those with push tokens) - so everyone gets notification in app
+		const users = await User.find({});
+
+		console.log(`📢 Sending notification to ${users.length} users`);
+		console.log(`Title: ${title}`);
+		console.log(`Body: ${body}`);
+		console.log(`Type: ${notificationType}`);
+
+		let notificationsCreated = 0;
+		let pushesSent = 0;
+
+		for (const user of users) {
+			try {
+				// Create notification record in database for EVERY user
+				await Notification.create({
+					userId: user._id,
+					title,
+					body,
+					type: notificationType,
+					data: data || {},
+					created_at: new Date(),
+				});
+				notificationsCreated++;
+
+				// Send push notification ONLY to users with valid push tokens
+				if (user.pushTokens && user.pushTokens.length > 0) {
+					const tokens = user.pushTokens.map((t) => t.token);
+					await sendPush(tokens, {
+						title,
+						body,
+						data: {
+							type: notificationType,
+							...data,
+						},
+					});
+					pushesSent++;
+				}
+			} catch (userError) {
+				console.error(`Error for user ${user._id}:`, userError.message);
+			}
+		}
+
+		res.status(200).json({
+			success: true,
+			message: `Sent to ${users.length} users`,
+			notificationsCreated,
+			pushesSent,
+		});
+	} catch (err) {
+		console.error("Send push to all users error:", err);
+		res.status(500).json({ error: err.message });
+	}
+};
 // ===============================
 // SEND BULK NOTIFICATION (Admin)
 // ===============================

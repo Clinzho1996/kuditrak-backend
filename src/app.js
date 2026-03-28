@@ -4,6 +4,7 @@ import mongoose from "mongoose";
 import "./cron.js";
 import { initSubscriptionSync } from "./cron/syncSubscription.js";
 import { errorMiddleware } from "./middleware/errorMiddleware.js";
+import adminRoutes from "./routes/analytics.js";
 import authRoutes from "./routes/auth.js";
 import { default as bankRoutes } from "./routes/banks.js";
 import budgetRoutes from "./routes/budget.js";
@@ -34,6 +35,7 @@ app.use("/api/categories", categoryRoutes);
 app.use("/api/account", bankRoutes);
 app.use("/api/mono", monoRoutes);
 app.use("/api/subscription", subscriptionRoutes);
+app.use("/api/admin", adminRoutes);
 
 // Error handler
 app.use(errorMiddleware);

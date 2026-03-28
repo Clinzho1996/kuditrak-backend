@@ -34,10 +34,41 @@ const protect = async (req, res, next) => {
 
 		req.user = user;
 		console.log("Calling next()");
-		next(); // This should work now
+		next();
 	} catch (error) {
 		console.log("Error in protect middleware:", error.message);
 		res.status(401).json({ message: "Not authorized, token failed" });
+	}
+};
+
+// backend/middleware/auth.js
+export const adminOnly = async (req, res, next) => {
+	try {
+		if (!req.user) {
+			return res.status(401).json({
+				success: false,
+				message: "Not authorized, please login",
+				code: "UNAUTHORIZED",
+			});
+		}
+
+		// Check if user has admin role
+		if (!req.user.isAdmin) {
+			return res.status(403).json({
+				success: false,
+				message: "Access denied. Admin privileges required.",
+				code: "ADMIN_REQUIRED",
+			});
+		}
+
+		next();
+	} catch (error) {
+		console.error("Admin middleware error:", error.message);
+		return res.status(500).json({
+			success: false,
+			message: "Server error",
+			code: "SERVER_ERROR",
+		});
 	}
 };
 

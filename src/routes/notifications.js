@@ -27,8 +27,4 @@ router.delete("/push-token", unregisterPushToken);
 router.get("/settings", getNotificationSettings);
 router.put("/settings", updateNotificationSettings);
 
-// Admin routes
-// router.post("/admin/create", adminOnly, createNotification);
-// router.post("/admin/bulk", adminOnly, sendBulkNotification);
-
 export default router;

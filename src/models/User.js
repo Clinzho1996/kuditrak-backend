@@ -113,11 +113,28 @@ const userSchema = new mongoose.Schema({
 			default: false,
 		},
 	},
+	isAdmin: {
+		type: Boolean,
+		default: false,
+	},
+
 	appleUserId: {
 		type: String,
 		unique: true,
 		sparse: true,
 		index: true,
+	},
+	isSuspended: {
+		type: Boolean,
+		default: false,
+	},
+	suspendedAt: {
+		type: Date,
+		default: null,
+	},
+	suspensionReason: {
+		type: String,
+		default: null,
 	},
 
 	// User budgets

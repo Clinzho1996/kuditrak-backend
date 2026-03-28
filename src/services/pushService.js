@@ -207,26 +207,60 @@ export const removeAllDeviceTokens = async (userId) => {
 };
 
 // Legacy sendPush function (keep for backward compatibility)
-export const sendPush = async (pushToken, title, body, data = {}) => {
+// backend/services/pushService.js - Update sendPush function
+export const sendPush = async (tokens, { title, body, data = {} }) => {
 	try {
-		if (!Expo.isExpoPushToken(pushToken)) {
-			console.error(`Invalid push token: ${pushToken}`);
-			return { success: false, message: "Invalid push token" };
+		if (!tokens || tokens.length === 0) {
+			return { success: false, message: "No tokens provided" };
 		}
 
-		const message = {
-			to: pushToken,
-			sound: "default",
-			title: title,
-			body: body,
-			data: data,
-			priority: "high",
+		const messages = [];
+		const validTokens = [];
+		const invalidTokens = [];
+
+		for (const token of tokens) {
+			if (!Expo.isExpoPushToken(token)) {
+				console.log(`Invalid push token: ${token}`);
+				invalidTokens.push(token);
+				continue;
+			}
+			validTokens.push(token);
+			messages.push({
+				to: token,
+				sound: "default",
+				title: title,
+				body: body,
+				data: data,
+				priority: "high",
+			});
+		}
+
+		if (messages.length === 0) {
+			return {
+				success: false,
+				message: "No valid tokens",
+				invalidTokens: invalidTokens.length,
+			};
+		}
+
+		const chunks = expo.chunkPushNotifications(messages);
+		const tickets = [];
+
+		for (const chunk of chunks) {
+			try {
+				const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
+				tickets.push(...ticketChunk);
+			} catch (error) {
+				console.error("Error sending chunk:", error);
+			}
+		}
+
+		return {
+			success: true,
+			sent: messages.length,
+			invalid: invalidTokens.length,
+			tickets: tickets,
 		};
-
-		const ticket = await expo.sendPushNotificationsAsync([message]);
-		console.log("Push sent:", ticket);
-
-		return { success: true, ticket: ticket[0] };
 	} catch (error) {
 		console.error("Error sending push:", error);
 		throw error;
