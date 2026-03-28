@@ -127,9 +127,6 @@ export const deleteNotification = async (req, res) => {
 	}
 };
 
-// ===============================
-// REGISTER PUSH TOKEN
-// ===============================
 // backend/controllers/notificationController.js
 // ===============================
 // REGISTER PUSH TOKEN
@@ -138,6 +135,8 @@ export const registerPushToken = async (req, res) => {
 	try {
 		const userId = req.user._id;
 		const { token, platform, deviceId } = req.body;
+
+		console.log("Registering push token:", { token, platform, deviceId });
 
 		if (!token || !platform) {
 			return res.status(400).json({ error: "Token and platform are required" });
@@ -149,10 +148,29 @@ export const registerPushToken = async (req, res) => {
 			return res.status(404).json({ error: "User not found" });
 		}
 
+		// Handle deviceId if it's an object (from Expo)
+		let deviceIdString = null;
+		if (deviceId) {
+			// If deviceId is an object with data property (Expo format)
+			if (typeof deviceId === "object") {
+				deviceIdString =
+					deviceId.data || deviceId.token || JSON.stringify(deviceId);
+			} else if (typeof deviceId === "string") {
+				deviceIdString = deviceId;
+			} else {
+				deviceIdString = String(deviceId);
+			}
+		}
+
 		// Initialize pushTokens array if it doesn't exist
 		if (!user.pushTokens) {
 			user.pushTokens = [];
 		}
+
+		// Clean up any existing entries with invalid deviceId
+		user.pushTokens = user.pushTokens.filter(
+			(t) => t.token && typeof t.token === "string",
+		);
 
 		// Check if token already exists
 		const existingTokenIndex = user.pushTokens.findIndex(
@@ -163,13 +181,14 @@ export const registerPushToken = async (req, res) => {
 			// Update existing token
 			user.pushTokens[existingTokenIndex].lastUsed = new Date();
 			user.pushTokens[existingTokenIndex].platform = platform;
-			if (deviceId) user.pushTokens[existingTokenIndex].deviceId = deviceId;
+			if (deviceIdString)
+				user.pushTokens[existingTokenIndex].deviceId = deviceIdString;
 		} else {
 			// Add new token
 			user.pushTokens.push({
 				token,
 				platform,
-				deviceId,
+				deviceId: deviceIdString,
 				createdAt: new Date(),
 				lastUsed: new Date(),
 			});
@@ -190,13 +209,14 @@ export const registerPushToken = async (req, res) => {
 // ===============================
 // UNREGISTER PUSH TOKEN
 // ===============================
-// ===============================
-// UNREGISTER PUSH TOKEN
-// ===============================
 export const unregisterPushToken = async (req, res) => {
 	try {
 		const userId = req.user._id;
 		const { token } = req.body;
+
+		if (!token) {
+			return res.status(400).json({ error: "Token is required" });
+		}
 
 		const user = await User.findById(userId);
 
@@ -204,7 +224,6 @@ export const unregisterPushToken = async (req, res) => {
 			return res.status(404).json({ error: "User not found" });
 		}
 
-		// Initialize pushTokens array if it doesn't exist
 		if (!user.pushTokens) {
 			user.pushTokens = [];
 		}

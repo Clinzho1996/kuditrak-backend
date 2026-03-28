@@ -40,14 +40,13 @@ const userSchema = new mongoose.Schema({
 	},
 	firebaseUid: String,
 
-	// Push notifications - CHANGE THIS
-	// Remove the old pushToken field and keep deviceTokens as pushTokens
+	// backend/models/User.js
 	pushTokens: {
 		type: [
 			{
 				token: { type: String, required: true },
 				platform: { type: String, enum: ["ios", "android"], required: true },
-				deviceId: { type: String },
+				deviceId: { type: mongoose.Schema.Types.Mixed, default: null }, // Use Mixed type
 				lastUsed: { type: Date, default: Date.now },
 				createdAt: { type: Date, default: Date.now },
 			},
