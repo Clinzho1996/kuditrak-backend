@@ -5,25 +5,28 @@ const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET;
 const BACKEND_URL =
 	process.env.BACKEND_URL || "https://kuditrak-backend.onrender.com";
 
-// Configuration for charges - only percentage fee
+// Configuration for charges
 const CHARGES_CONFIG = {
-	// Platform fee percentage (0.5%)
-	PLATFORM_FEE_PERCENTAGE: 0.5,
+	// Platform fee percentage for top-ups (0.5% - commented out for now)
+	// PLATFORM_FEE_PERCENTAGE: 0.5,
+	// Withdrawal fee (flat rate)
+	WITHDRAWAL_FEE: 50,
 };
 
-// Calculate charges based on amount
-const calculateCharges = (amount) => {
-	// Calculate percentage-based fee only
-	const percentageFee = (amount * CHARGES_CONFIG.PLATFORM_FEE_PERCENTAGE) / 100;
-
-	// Round to nearest kobo
-	const roundedFee = Math.ceil(percentageFee * 100) / 100;
-
+// Calculate top-up charges (currently no fee)
+const calculateTopUpCharges = (amount) => {
+	// No fee for top-ups
 	return {
-		platformFee: roundedFee,
-		totalFee: roundedFee,
-		amountToCharge: amount + roundedFee,
+		platformFee: 0,
+		totalFee: 0,
+		amountToCharge: amount,
 	};
+};
+
+// Calculate withdrawal fee
+const calculateWithdrawalFee = (amount) => {
+	// Flat fee of ₦50
+	return CHARGES_CONFIG.WITHDRAWAL_FEE;
 };
 
 export const createTopUp = async ({ email, amount, reference, userId }) => {
@@ -35,14 +38,13 @@ export const createTopUp = async ({ email, amount, reference, userId }) => {
 			userId: userId?.toString(),
 		});
 
-		// Calculate charges
-		const charges = calculateCharges(amount);
+		// Calculate charges (currently no fee for top-ups)
+		const charges = calculateTopUpCharges(amount);
 		const totalAmount = charges.amountToCharge;
 
-		console.log("Charge breakdown:", {
+		console.log("Top-up breakdown:", {
 			amount,
-			platformFee: charges.platformFee,
-			totalFee: charges.totalFee,
+			fee: charges.totalFee,
 			amountToCharge: totalAmount,
 		});
 
@@ -213,7 +215,7 @@ export const getOrCreateRecipient = async (bankAccount) => {
 	}
 };
 
-// Create a payout to a user bank account
+// Create a payout to a user bank account (with ₦50 flat fee)
 export const initiatePayout = async ({
 	amount,
 	userId,
@@ -237,7 +239,24 @@ export const initiatePayout = async ({
 			};
 		}
 
-		const koboAmount = Number(amount) * 100;
+		// Calculate withdrawal fee
+		const withdrawalFee = calculateWithdrawalFee(amount);
+		const amountToSend = Number(amount) - withdrawalFee;
+
+		if (amountToSend <= 0) {
+			return {
+				success: false,
+				message: `Withdrawal amount must be greater than ₦${withdrawalFee} to cover the ₦${withdrawalFee} processing fee.`,
+			};
+		}
+
+		const koboAmount = amountToSend * 100;
+
+		console.log("Withdrawal breakdown:", {
+			requestedAmount: amount,
+			fee: withdrawalFee,
+			amountToSend: amountToSend,
+		});
 
 		const response = await axios.post(
 			"https://api.paystack.co/transfer",
@@ -265,6 +284,8 @@ export const initiatePayout = async ({
 				message: "Transfer initiated successfully",
 				transferCode: response.data.data.transfer_code,
 				transferReference: response.data.data.reference,
+				fee: withdrawalFee,
+				amountSent: amountToSend,
 				data: response.data.data,
 			};
 		} else {
