@@ -5,6 +5,27 @@ const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET;
 const BACKEND_URL =
 	process.env.BACKEND_URL || "https://kuditrak-backend.onrender.com";
 
+// Configuration for charges - only percentage fee
+const CHARGES_CONFIG = {
+	// Platform fee percentage (0.5%)
+	PLATFORM_FEE_PERCENTAGE: 0.5,
+};
+
+// Calculate charges based on amount
+const calculateCharges = (amount) => {
+	// Calculate percentage-based fee only
+	const percentageFee = (amount * CHARGES_CONFIG.PLATFORM_FEE_PERCENTAGE) / 100;
+
+	// Round to nearest kobo
+	const roundedFee = Math.ceil(percentageFee * 100) / 100;
+
+	return {
+		platformFee: roundedFee,
+		totalFee: roundedFee,
+		amountToCharge: amount + roundedFee,
+	};
+};
+
 export const createTopUp = async ({ email, amount, reference, userId }) => {
 	try {
 		console.log("Creating Paystack transaction for:", {
@@ -14,16 +35,30 @@ export const createTopUp = async ({ email, amount, reference, userId }) => {
 			userId: userId?.toString(),
 		});
 
+		// Calculate charges
+		const charges = calculateCharges(amount);
+		const totalAmount = charges.amountToCharge;
+
+		console.log("Charge breakdown:", {
+			amount,
+			platformFee: charges.platformFee,
+			totalFee: charges.totalFee,
+			amountToCharge: totalAmount,
+		});
+
 		const response = await axios.post(
 			"https://api.paystack.co/transaction/initialize",
 			{
 				email,
-				amount: amount * 100,
+				amount: totalAmount * 100, // Paystack uses kobo
 				reference,
 				callback_url: `${BACKEND_URL}/api/wallet/verify`,
 				metadata: {
 					userId: userId.toString(),
 					amount: amount,
+					totalAmount: totalAmount,
+					fee: charges.totalFee,
+					platformFee: charges.platformFee,
 					type: "topup",
 				},
 			},
@@ -40,6 +75,9 @@ export const createTopUp = async ({ email, amount, reference, userId }) => {
 		return {
 			paymentLink: response.data.data.authorization_url,
 			reference: response.data.data.reference,
+			amount: amount,
+			totalAmount: totalAmount,
+			fee: charges.totalFee,
 		};
 	} catch (error) {
 		console.error(
