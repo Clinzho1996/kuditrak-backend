@@ -196,7 +196,6 @@ export const syncSubscription = async (req, res) => {
 		return res.status(500).json({ error: err.message });
 	}
 };
-
 // ===============================
 // GET CURRENT SUBSCRIPTION
 // ===============================

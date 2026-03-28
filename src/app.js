@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import express from "express";
 import mongoose from "mongoose";
 import "./cron.js";
+import { initSubscriptionSync } from "./cron/syncSubscription.js";
 import { errorMiddleware } from "./middleware/errorMiddleware.js";
 import authRoutes from "./routes/auth.js";
 import { default as bankRoutes } from "./routes/banks.js";
@@ -42,5 +43,7 @@ mongoose
 	.connect(process.env.MONGO_URI)
 	.then(() => console.log("MongoDB connected"))
 	.catch((err) => console.error(err));
+
+await initSubscriptionSync();
 
 export default app;

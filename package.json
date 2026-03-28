@@ -21,7 +21,8 @@
 		"mongoose": "^9.3.0",
 		"multer": "^2.1.1",
 		"node-cron": "^4.2.1",
-		"resend": "^6.9.3"
+		"resend": "^6.9.3",
+		"revenuecat": "^1.0.0"
 	},
 	"devDependencies": {
 		"nodemon": "^3.0.1"
