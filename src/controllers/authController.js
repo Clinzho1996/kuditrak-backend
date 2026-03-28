@@ -533,9 +533,10 @@ export const login = async (req, res) => {
 	}
 };
 
+// backend/controllers/authController.js - Update socialAuth
 export const socialAuth = async (req, res) => {
 	try {
-		const { idToken } = req.body;
+		const { idToken, name, email, appleUserId } = req.body;
 
 		if (!idToken) {
 			return res.status(400).json({
@@ -547,34 +548,82 @@ export const socialAuth = async (req, res) => {
 
 		const decoded = await verifyFirebaseToken(idToken);
 
-		const { email, name, uid, firebase } = decoded;
+		const { email: firebaseEmail, uid, firebase } = decoded;
+		const userEmail = email || firebaseEmail;
 
-		let user = await User.findOne({ email });
+		// Find existing user by email or Apple user ID
+		let user = await User.findOne({
+			$or: [{ email: userEmail }, { appleUserId: appleUserId }],
+		});
 
 		if (!user) {
+			// NEW USER - use the name provided by Apple
+			let userName = name || "User";
+
+			// If name is still null, extract from email
+			if (userName === "User" && userEmail) {
+				userName = userEmail.split("@")[0];
+			}
+
 			user = await User.create({
-				fullName: name || "User",
-				email,
+				fullName: userName,
+				email: userEmail,
 				firebaseUid: uid,
-				provider: firebase.sign_in_provider,
+				provider: firebase.sign_in_provider || "apple.com",
 				isVerified: true,
+				appleUserId: appleUserId, // Store Apple user ID for future reference
+				onboardingCompleted: false,
 			});
 
 			await initializeDefaultCategories(user._id);
+			await Wallet.create({ userId: user._id });
 
-			await Wallet.create({
-				userId: user._id,
-			});
+			console.log(`✅ New Apple user created: ${userName} (${userEmail})`);
+		} else {
+			// EXISTING USER - update name if it's still "User" and we have a real name
+			if (
+				(user.fullName === "User" || !user.fullName) &&
+				name &&
+				name !== "User"
+			) {
+				user.fullName = name;
+				await user.save();
+				console.log(`📝 Updated user name to: ${name} for ${user.email}`);
+			}
+
+			// Store Apple user ID if not already set
+			if (appleUserId && !user.appleUserId) {
+				user.appleUserId = appleUserId;
+				await user.save();
+				console.log(`🔗 Linked Apple ID for user: ${user.email}`);
+			}
 		}
 
 		const token = generateToken(user._id);
 
+		// Remove sensitive data
+		const userResponse = {
+			_id: user._id,
+			fullName: user.fullName,
+			email: user.email,
+			subscription: user.subscription,
+			onboardingCompleted: user.onboardingCompleted,
+			profileImage: user.profileImage,
+			createdAt: user.createdAt,
+		};
+
 		res.status(200).json({
+			success: true,
 			token,
-			user,
-			firstLogin: !user.onboardingCompleted, // Indicate if user needs to complete onboarding
+			user: userResponse,
+			firstLogin: !user.onboardingCompleted,
 		});
 	} catch (err) {
-		res.status(500).json({ error: err.message });
+		console.error("Social auth error:", err);
+		res.status(500).json({
+			success: false,
+			message: err.message,
+			code: "SOCIAL_AUTH_FAILED",
+		});
 	}
 };

@@ -107,6 +107,12 @@ const userSchema = new mongoose.Schema({
 			default: false,
 		},
 	},
+	appleUserId: {
+		type: String,
+		unique: true,
+		sparse: true,
+		index: true,
+	},
 
 	// User budgets
 	budgets: [
