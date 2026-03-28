@@ -421,12 +421,20 @@ export const withdrawToBank = async (req, res) => {
 			console.error("Notification error:", notifError);
 		}
 
+		// backend/controllers/walletController.js - Update the success response
 		res.status(200).json({
 			success: true,
-			message: "Withdrawal successful",
-			amount,
+			message: `Withdrawal of ₦${amount} processed. ₦${payoutResult.fee} fee applied.`,
+			amount: amount,
+			fee: payoutResult.fee,
+			amountSent: payoutResult.amountSent,
 			balance: wallet.balance,
-			payoutReference,
+			payoutReference: payoutResult.transferReference,
+			wallet: {
+				balance: wallet.balance,
+				allocated: wallet.allocated,
+				available: wallet.available,
+			},
 		});
 	} catch (err) {
 		await session.abortTransaction();
