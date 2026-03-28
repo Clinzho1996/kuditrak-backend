@@ -40,6 +40,38 @@ app.use("/api/admin", adminRoutes);
 // Error handler
 app.use(errorMiddleware);
 
+const allowedOrigins = [
+	"http://localhost:3000", // Local development
+	"https://kuditrak-admin.vercel.app", // Production frontend
+	"https://kuditrak.com",
+	"https://admin.kuditrak.com", // Your main domain
+	"http://localhost:5000", // Backend itself
+];
+
+app.use(
+	cors({
+		origin: function (origin, callback) {
+			// Allow requests with no origin (like mobile apps, curl, etc.)
+			if (!origin) return callback(null, true);
+
+			if (
+				allowedOrigins.indexOf(origin) !== -1 ||
+				process.env.NODE_ENV !== "production"
+			) {
+				callback(null, true);
+			} else {
+				callback(new Error("Not allowed by CORS"));
+			}
+		},
+		credentials: true,
+		methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+		allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+	}),
+);
+
+// Handle preflight requests
+app.options("*", cors());
+
 // DB Connection
 mongoose
 	.connect(process.env.MONGO_URI)
