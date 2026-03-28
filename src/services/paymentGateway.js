@@ -215,9 +215,8 @@ export const getOrCreateRecipient = async (bankAccount) => {
 	}
 };
 
-// Create a payout to a user bank account (with ₦50 flat fee)
 export const initiatePayout = async ({
-	amount,
+	amount, // This should be the amount user wants to receive
 	userId,
 	bankAccountId,
 	recipientCode,
@@ -239,24 +238,7 @@ export const initiatePayout = async ({
 			};
 		}
 
-		// Calculate withdrawal fee
-		const withdrawalFee = calculateWithdrawalFee(amount);
-		const amountToSend = Number(amount) - withdrawalFee;
-
-		if (amountToSend <= 0) {
-			return {
-				success: false,
-				message: `Withdrawal amount must be greater than ₦${withdrawalFee} to cover the ₦${withdrawalFee} processing fee.`,
-			};
-		}
-
-		const koboAmount = amountToSend * 100;
-
-		console.log("Withdrawal breakdown:", {
-			requestedAmount: amount,
-			fee: withdrawalFee,
-			amountToSend: amountToSend,
-		});
+		const koboAmount = Number(amount) * 100; // Send exactly the amount passed
 
 		const response = await axios.post(
 			"https://api.paystack.co/transfer",
@@ -284,8 +266,8 @@ export const initiatePayout = async ({
 				message: "Transfer initiated successfully",
 				transferCode: response.data.data.transfer_code,
 				transferReference: response.data.data.reference,
-				fee: withdrawalFee,
-				amountSent: amountToSend,
+				amount: Number(amount),
+				fee: 0, // No fee deducted here - fee is handled in wallet controller
 				data: response.data.data,
 			};
 		} else {
@@ -296,17 +278,9 @@ export const initiatePayout = async ({
 		}
 	} catch (err) {
 		console.error("Payout error:", err.response?.data || err.message);
-
-		if (err.response?.data?.message) {
-			return {
-				success: false,
-				message: err.response.data.message,
-			};
-		}
-
 		return {
 			success: false,
-			message: err.message || "Payout failed",
+			message: err.response?.data?.message || err.message || "Payout failed",
 		};
 	}
 };

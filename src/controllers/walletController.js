@@ -8,10 +8,6 @@ import BankConnection from "../models/BankConnection.js";
 import Transaction from "../models/Transaction.js";
 import Wallet from "../models/Wallet.js";
 import {
-	sendLowBalanceNotification,
-	sendWithdrawalNotification,
-} from "../services/notificationService.js";
-import {
 	getOrCreateRecipient,
 	initiatePayout,
 } from "../services/paymentGateway.js";
@@ -283,10 +279,7 @@ export const getBalance = async (req, res) => {
 
 export const withdrawToBank = async (req, res) => {
 	const { amount, bankAccountId } = req.body;
-
-	if (!amount || amount <= 0) {
-		return res.status(400).json({ error: "Invalid withdrawal amount" });
-	}
+	const WITHDRAWAL_FEE = 50;
 
 	const session = await mongoose.startSession();
 	session.startTransaction();
@@ -297,8 +290,14 @@ export const withdrawToBank = async (req, res) => {
 		);
 		if (!wallet) throw new Error("Wallet not found");
 
-		if (Number(wallet.available) < Number(amount)) {
-			throw new Error("Insufficient available balance");
+		// Total to deduct from wallet = amount user wants to receive + fee
+		const totalDeduction = Number(amount) + WITHDRAWAL_FEE;
+
+		// Check if user has enough balance
+		if (Number(wallet.available) < totalDeduction) {
+			throw new Error(
+				`Insufficient balance. You need ₦${totalDeduction} to receive ₦${amount} (includes ₦${WITHDRAWAL_FEE} fee)`,
+			);
 		}
 
 		// Get bank account
@@ -312,43 +311,7 @@ export const withdrawToBank = async (req, res) => {
 			throw new Error("Bank account not found");
 		}
 
-		// Check if this bank supports withdrawals
-		const allowedBanks = [
-			"GTBank",
-			"Access Bank",
-			"Wema Bank",
-			"UBA",
-			"First Bank",
-			"Zenith Bank",
-			"FCMB",
-			"Stanbic IBTC",
-			"Polaris Bank",
-			"Union Bank of Nigeria",
-			"Fidelity Bank",
-			"Sterling Bank",
-			"Ecobank",
-		];
-
-		const isAllowedBank = allowedBanks.some(
-			(bank) =>
-				bankAccount.bankName &&
-				bankAccount.bankName.toLowerCase().includes(bank.toLowerCase()),
-		);
-
-		if (!isAllowedBank) {
-			throw new Error(
-				`Withdrawals to ${bankAccount.bankName || "this bank"} are not supported. Please link a traditional Nigerian bank account (GTBank, Access, UBA, etc.) for withdrawals.`,
-			);
-		}
-
-		// Check if we have bank code
-		if (!bankAccount.bankCode || bankAccount.bankCode === "000000") {
-			throw new Error(
-				`Bank code not found for ${bankAccount.bankName || "this bank"}. Please contact support.`,
-			);
-		}
-
-		// Get or create recipient code in Paystack
+		// Get or create recipient code
 		let recipientResult;
 		try {
 			recipientResult = await getOrCreateRecipient(bankAccount);
@@ -363,10 +326,10 @@ export const withdrawToBank = async (req, res) => {
 			);
 		}
 
-		// Initiate payout to bank account
+		// IMPORTANT: Send the FULL amount the user wants to receive (not minus fee)
 		const payoutReference = `PAYOUT-${req.user._id}-${Date.now()}`;
 		const payoutResult = await initiatePayout({
-			amount: Number(amount),
+			amount: Number(amount), // Send the full amount user wants to receive
 			userId: req.user._id,
 			bankAccountId,
 			recipientCode: recipientResult.recipientCode,
@@ -377,9 +340,9 @@ export const withdrawToBank = async (req, res) => {
 			throw new Error(payoutResult.message);
 		}
 
-		// Deduct from wallet
-		wallet.balance = Number(wallet.balance) - Number(amount);
-		wallet.available = Number(wallet.available) - Number(amount);
+		// Deduct total amount (withdrawal amount + fee) from wallet
+		wallet.balance = Number(wallet.balance) - totalDeduction;
+		wallet.available = Number(wallet.available) - totalDeduction;
 		await wallet.save({ session });
 
 		// Record transaction
@@ -399,8 +362,9 @@ export const withdrawToBank = async (req, res) => {
 						bankName: bankAccount.bankName,
 						accountNumber: bankAccount.accountNumber,
 						reference: payoutReference,
-						recipientCode: recipientResult.recipientCode,
-						transferCode: payoutResult.transferCode,
+						fee: WITHDRAWAL_FEE,
+						totalDeduction: totalDeduction,
+						amountSent: Number(amount), // User receives full amount
 					},
 				},
 			],
@@ -410,24 +374,13 @@ export const withdrawToBank = async (req, res) => {
 		await session.commitTransaction();
 		session.endSession();
 
-		// Send notification (don't await, fire and forget)
-		try {
-			await sendWithdrawalNotification(req.user._id, amount, wallet.balance);
-
-			if (wallet.balance < 10000) {
-				await sendLowBalanceNotification(req.user._id, wallet.balance);
-			}
-		} catch (notifError) {
-			console.error("Notification error:", notifError);
-		}
-
-		// backend/controllers/walletController.js - Update the success response
 		res.status(200).json({
 			success: true,
-			message: `Withdrawal of ₦${amount} processed. ₦${payoutResult.fee} fee applied.`,
-			amount: amount,
-			fee: payoutResult.fee,
-			amountSent: payoutResult.amountSent,
+			message: `Withdrawal of ₦${amount} processed. ₦${WITHDRAWAL_FEE} fee applied.`,
+			amount: Number(amount),
+			fee: WITHDRAWAL_FEE,
+			amountSent: Number(amount), // User receives full amount
+			totalDeduction: totalDeduction,
 			balance: wallet.balance,
 			payoutReference: payoutResult.transferReference,
 			wallet: {
