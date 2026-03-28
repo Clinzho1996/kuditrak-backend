@@ -12,6 +12,7 @@
 		"axios": "^1.13.6",
 		"bcrypt": "^6.0.0",
 		"cloudinary": "^2.9.0",
+		"cors": "^2.8.6",
 		"dotenv": "^17.3.1",
 		"expo-server-sdk": "^6.1.0",
 		"express": "^5.2.1",
