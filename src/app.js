@@ -1,4 +1,4 @@
-import cors from "cors";
+// backend/app.js
 import dotenv from "dotenv";
 import express from "express";
 import mongoose from "mongoose";
@@ -21,6 +21,26 @@ import walletRoutes from "./routes/wallet.js";
 
 dotenv.config();
 const app = express();
+
+// =============== SIMPLE CORS (WORKS) ===============
+// Allow all origins - for development
+app.use((req, res, next) => {
+	// Allow all origins
+	res.header("Access-Control-Allow-Origin", "*");
+	res.header(
+		"Access-Control-Allow-Methods",
+		"GET, POST, PUT, DELETE, PATCH, OPTIONS",
+	);
+	res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+	// Handle preflight
+	if (req.method === "OPTIONS") {
+		return res.sendStatus(200);
+	}
+
+	next();
+});
+
 app.use(express.json());
 
 // Routes
@@ -40,35 +60,6 @@ app.use("/api/admin", adminRoutes);
 
 // Error handler
 app.use(errorMiddleware);
-
-const allowedOrigins = [
-	"http://localhost:3000", // Local development
-	"https://kuditrak-admin.vercel.app", // Production frontend
-	"https://kuditrak.com",
-	"https://admin.kuditrak.com", // Your main domain
-	"http://localhost:5000", // Backend itself
-];
-
-app.use(
-	cors({
-		origin: function (origin, callback) {
-			// Allow requests with no origin (like mobile apps, curl, etc.)
-			if (!origin) return callback(null, true);
-
-			if (
-				allowedOrigins.indexOf(origin) !== -1 ||
-				process.env.NODE_ENV !== "production"
-			) {
-				callback(null, true);
-			} else {
-				callback(new Error("Not allowed by CORS"));
-			}
-		},
-		credentials: true,
-		methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-		allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-	}),
-);
 
 // DB Connection
 mongoose
