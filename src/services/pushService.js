@@ -12,9 +12,9 @@ export const sendPushToUser = async (userId, title, body, data = {}) => {
 		console.log(`Title: ${title}`);
 		console.log(`Body: ${body}`);
 
-		// Find user with device tokens
+		// Find user with push tokens (not deviceTokens)
 		const user = await User.findById(userId).select(
-			"deviceTokens email fullName",
+			"pushTokens email fullName",
 		);
 
 		if (!user) {
@@ -22,32 +22,33 @@ export const sendPushToUser = async (userId, title, body, data = {}) => {
 			return { success: false, message: "User not found" };
 		}
 
-		if (!user.deviceTokens || user.deviceTokens.length === 0) {
-			console.log(`❌ No device tokens for user: ${user.email}`);
+		// Check pushTokens array (not deviceTokens)
+		if (!user.pushTokens || user.pushTokens.length === 0) {
+			console.log(`❌ No push tokens for user: ${user.email}`);
 			return { success: false, message: "No device tokens" };
 		}
 
 		console.log(
-			`✅ Found ${user.deviceTokens.length} device token(s) for ${user.email}`,
+			`✅ Found ${user.pushTokens.length} push token(s) for ${user.email}`,
 		);
 
 		const messages = [];
 		const validTokens = [];
 
 		// Prepare messages for each valid token
-		for (const deviceToken of user.deviceTokens) {
-			console.log(`Checking token: ${deviceToken.token.substring(0, 30)}...`);
+		for (const pushToken of user.pushTokens) {
+			console.log(`Checking token: ${pushToken.token.substring(0, 30)}...`);
 
 			// Check if it's a valid Expo push token
-			if (!Expo.isExpoPushToken(deviceToken.token)) {
-				console.log(`❌ Invalid Expo push token: ${deviceToken.token}`);
+			if (!Expo.isExpoPushToken(pushToken.token)) {
+				console.log(`❌ Invalid Expo push token: ${pushToken.token}`);
 				continue;
 			}
 
-			validTokens.push(deviceToken.token);
+			validTokens.push(pushToken.token);
 
 			messages.push({
-				to: deviceToken.token,
+				to: pushToken.token,
 				sound: "default",
 				title: title,
 				body: body,
@@ -90,7 +91,7 @@ export const sendPushToUser = async (userId, title, body, data = {}) => {
 						if (ticket.message === "DeviceNotRegistered") {
 							console.log(`Removing invalid token: ${messages[index]?.to}`);
 							User.findByIdAndUpdate(user._id, {
-								$pull: { deviceTokens: { token: messages[index]?.to } },
+								$pull: { pushTokens: { token: messages[index]?.to } },
 							});
 						}
 					}
@@ -117,86 +118,90 @@ export const sendPushToUser = async (userId, title, body, data = {}) => {
 	}
 };
 
-// Save device token for user
-export const saveDeviceToken = async (userId, token, deviceType) => {
+// Save push token for user (updated for pushTokens)
+export const saveDeviceToken = async (
+	userId,
+	token,
+	deviceType,
+	deviceId = null,
+) => {
 	try {
-		console.log(`💾 Saving device token for user: ${userId}`);
+		console.log(`💾 Saving push token for user: ${userId}`);
 
-		const userObjectId =
-			typeof userId === "string" ? new mongoose.Types.ObjectId(userId) : userId;
-
-		// Remove this token from any other user first (cleanup)
-		await User.updateMany(
-			{ "deviceTokens.token": token },
-			{ $pull: { deviceTokens: { token: token } } },
-		);
-
-		// Add token to current user
-		const user = await User.findById(userObjectId);
+		const user = await User.findById(userId);
 
 		if (!user) {
 			throw new Error("User not found");
 		}
 
-		if (!user.deviceTokens) {
-			user.deviceTokens = [];
+		// Initialize pushTokens array if it doesn't exist
+		if (!user.pushTokens) {
+			user.pushTokens = [];
 		}
 
+		// Remove this token from any other user first (cleanup)
+		await User.updateMany(
+			{ "pushTokens.token": token },
+			{ $pull: { pushTokens: { token: token } } },
+		);
+
 		// Check if token already exists for this user
-		const existingToken = user.deviceTokens.find((t) => t.token === token);
+		const existingToken = user.pushTokens.find((t) => t.token === token);
 
 		if (existingToken) {
 			existingToken.lastUsed = new Date();
-			existingToken.deviceType = deviceType;
+			existingToken.platform = deviceType;
+			if (deviceId) existingToken.deviceId = deviceId;
 		} else {
-			user.deviceTokens.push({
+			user.pushTokens.push({
 				token,
-				deviceType,
+				platform: deviceType,
+				deviceId: deviceId,
 				lastUsed: new Date(),
 				createdAt: new Date(),
 			});
 		}
 
 		await user.save();
-		console.log(`✅ Device token saved for ${user.email}`);
+		console.log(`✅ Push token saved for ${user.email}`);
 
 		return user;
 	} catch (error) {
-		console.error("Error saving device token:", error);
+		console.error("Error saving push token:", error);
 		throw error;
 	}
 };
 
-// Remove device token
+// Remove push token
 export const removeDeviceToken = async (userId, token) => {
 	try {
 		const result = await User.findByIdAndUpdate(
 			userId,
-			{ $pull: { deviceTokens: { token: token } } },
+			{ $pull: { pushTokens: { token: token } } },
 			{ new: true },
 		);
 
-		console.log(`✅ Device token removed for user ${userId}`);
+		console.log(`✅ Push token removed for user ${userId}`);
 		return result;
 	} catch (error) {
-		console.error("Error removing device token:", error);
+		console.error("Error removing push token:", error);
 		throw error;
 	}
 };
 
-// Remove all device tokens for a user
+// Remove all push tokens for a user
 export const removeAllDeviceTokens = async (userId) => {
 	try {
 		const result = await User.findByIdAndUpdate(
 			userId,
-			{ $set: { deviceTokens: [] } },
+			{ $set: { pushTokens: [] } },
 			{ new: true },
 		);
 
-		console.log(`✅ All device tokens removed for user ${userId}`);
+		console.log(`✅ All push tokens removed for user ${userId}`);
 		return result;
 	} catch (error) {
-		console.error("Error removing all device tokens:", error);
+		console.error("Error removing all push tokens:", error);
 		throw error;
 	}
 };
