@@ -2,6 +2,7 @@
 import express from "express";
 import {
 	cancelSubscription,
+	fixSubscriptionData,
 	getSubscription,
 	getSubscriptionHistory,
 	getSubscriptionStatus,
@@ -25,5 +26,7 @@ router.get("/history", getSubscriptionHistory);
 router.post("/sync", syncSubscription);
 router.post("/cancel", cancelSubscription);
 router.post("/verify", verifyWithRevenueCat);
+// backend/routes/subscriptionRoutes.js
+router.post("/fix-data", fixSubscriptionData);
 
 export default router;

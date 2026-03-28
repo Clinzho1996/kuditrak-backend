@@ -489,3 +489,43 @@ export const getSubscriptionHistory = async (req, res) => {
 		return res.status(500).json({ error: err.message });
 	}
 };
+
+// backend/controllers/subscriptionController.js
+export const fixSubscriptionData = async (req, res) => {
+	try {
+		const users = await User.find({});
+		let fixed = 0;
+
+		for (const user of users) {
+			let changed = false;
+
+			// Fix free plan with endDate
+			if (user.subscription?.plan === "free" && user.subscription?.endDate) {
+				user.subscription.endDate = null;
+				user.subscription.startDate = null;
+				changed = true;
+			}
+
+			// Fix active plan without endDate
+			if (
+				user.subscription?.plan !== "free" &&
+				user.subscription?.status === "active" &&
+				!user.subscription?.endDate
+			) {
+				user.subscription.endDate = new Date(
+					Date.now() + 30 * 24 * 60 * 60 * 1000,
+				);
+				changed = true;
+			}
+
+			if (changed) {
+				await user.save();
+				fixed++;
+			}
+		}
+
+		res.json({ success: true, fixed });
+	} catch (err) {
+		res.status(500).json({ error: err.message });
+	}
+};

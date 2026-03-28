@@ -35,17 +35,10 @@ const fetchCustomerInfo = async (userId) => {
 	}
 };
 
+// backend/services/subscriptionSyncService.js - Fix the sync logic
 export const syncUserSubscription = async (userId, retries = 3) => {
 	try {
 		console.log(`🔄 Syncing subscription for user: ${userId}`);
-
-		// Check if MongoDB is ready
-		if (mongoose.connection.readyState !== 1) {
-			console.log("⏳ MongoDB not ready, waiting...");
-			await new Promise((resolve) => setTimeout(resolve, 2000));
-			if (retries > 0) return syncUserSubscription(userId, retries - 1);
-			return false;
-		}
 
 		// Fetch customer info from RevenueCat API
 		const subscriber = await fetchCustomerInfo(userId);
@@ -54,20 +47,45 @@ export const syncUserSubscription = async (userId, retries = 3) => {
 		const entitlements = subscriber.entitlements || {};
 		const hasBasic = entitlements["Kuditrak Basic"]?.is_active === true;
 		const hasPro = entitlements["Kuditrak Pro"]?.is_active === true;
-		const hasActive = hasBasic || hasPro;
 
 		let plan = "free";
+		let status = "active";
+		let endDate = null;
+		let startDate = null;
+
 		if (hasPro) {
 			plan = "pro";
+			const proEntitlement = entitlements["Kuditrak Pro"];
+			endDate = proEntitlement?.expires_date
+				? new Date(proEntitlement.expires_date)
+				: null;
+			startDate = proEntitlement?.purchase_date
+				? new Date(proEntitlement.purchase_date)
+				: new Date();
+			// Check if expired
+			if (endDate && new Date() > endDate) {
+				status = "expired";
+			}
 		} else if (hasBasic) {
 			plan = "basic";
-		}
-
-		const activeEntitlement = hasPro
-			? entitlements["Kuditrak Pro"]
-			: hasBasic
-				? entitlements["Kuditrak Basic"]
+			const basicEntitlement = entitlements["Kuditrak Basic"];
+			endDate = basicEntitlement?.expires_date
+				? new Date(basicEntitlement.expires_date)
 				: null;
+			startDate = basicEntitlement?.purchase_date
+				? new Date(basicEntitlement.purchase_date)
+				: new Date();
+			// Check if expired
+			if (endDate && new Date() > endDate) {
+				status = "expired";
+			}
+		} else {
+			// No active subscription
+			plan = "free";
+			status = "active";
+			endDate = null;
+			startDate = null;
+		}
 
 		// Find and update user
 		const user = await User.findById(userId);
@@ -76,28 +94,26 @@ export const syncUserSubscription = async (userId, retries = 3) => {
 			return false;
 		}
 
+		// Update subscription with correct data
 		user.subscription = {
 			plan,
-			status: hasActive ? "active" : "expired",
-			startDate: activeEntitlement?.purchase_date
-				? new Date(activeEntitlement.purchase_date)
-				: user.subscription?.startDate || new Date(),
-			endDate: activeEntitlement?.expires_date
-				? new Date(activeEntitlement.expires_date)
-				: null,
-			productId: activeEntitlement?.product_identifier,
+			status,
+			startDate,
+			endDate,
+			productId: hasPro ? "pro" : hasBasic ? "basic" : null,
 			revenueCatId: userId,
 			lastSyncAt: new Date(),
 		};
 
 		await user.save();
 
-		console.log(`✅ Subscription synced for user ${userId}: ${plan}`);
+		console.log(
+			`✅ Subscription synced for user ${userId}: ${plan} (${status})`,
+		);
 		return true;
 	} catch (err) {
 		console.error(`Sync error for user ${userId}:`, err.message);
 		if (retries > 0) {
-			console.log(`Retrying... (${retries} attempts left)`);
 			await new Promise((resolve) => setTimeout(resolve, 2000));
 			return syncUserSubscription(userId, retries - 1);
 		}
