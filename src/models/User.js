@@ -1,3 +1,4 @@
+// backend/models/User.js
 import mongoose from "mongoose";
 
 const userSchema = new mongoose.Schema({
@@ -37,10 +38,22 @@ const userSchema = new mongoose.Schema({
 		type: String,
 		default: null,
 	},
-	firebaseUid: String, // For Firebase Authentication users
+	firebaseUid: String,
 
-	// Push notifications
-	pushToken: String,
+	// Push notifications - CHANGE THIS
+	// Remove the old pushToken field and keep deviceTokens as pushTokens
+	pushTokens: {
+		type: [
+			{
+				token: { type: String, required: true },
+				platform: { type: String, enum: ["ios", "android"], required: true },
+				deviceId: { type: String },
+				lastUsed: { type: Date, default: Date.now },
+				createdAt: { type: Date, default: Date.now },
+			},
+		],
+		default: [],
+	},
 
 	// Profile image
 	profileImage: String,
@@ -55,6 +68,7 @@ const userSchema = new mongoose.Schema({
 	resetOtp: Number,
 	resetOtpExpires: Date,
 	resetOtpVerified: Boolean,
+
 	subscription: {
 		plan: {
 			type: String,
@@ -69,14 +83,7 @@ const userSchema = new mongoose.Schema({
 			default: "active",
 		},
 	},
-	deviceTokens: [
-		{
-			token: { type: String, required: true },
-			deviceType: { type: String, enum: ["ios", "android"], required: true },
-			lastUsed: { type: Date, default: Date.now },
-			createdAt: { type: Date, default: Date.now },
-		},
-	],
+
 	notificationSettings: {
 		push_enabled: {
 			type: Boolean,

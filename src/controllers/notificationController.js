@@ -130,6 +130,10 @@ export const deleteNotification = async (req, res) => {
 // ===============================
 // REGISTER PUSH TOKEN
 // ===============================
+// backend/controllers/notificationController.js
+// ===============================
+// REGISTER PUSH TOKEN
+// ===============================
 export const registerPushToken = async (req, res) => {
 	try {
 		const userId = req.user._id;
@@ -140,6 +144,15 @@ export const registerPushToken = async (req, res) => {
 		}
 
 		const user = await User.findById(userId);
+
+		if (!user) {
+			return res.status(404).json({ error: "User not found" });
+		}
+
+		// Initialize pushTokens array if it doesn't exist
+		if (!user.pushTokens) {
+			user.pushTokens = [];
+		}
 
 		// Check if token already exists
 		const existingTokenIndex = user.pushTokens.findIndex(
@@ -177,14 +190,29 @@ export const registerPushToken = async (req, res) => {
 // ===============================
 // UNREGISTER PUSH TOKEN
 // ===============================
+// ===============================
+// UNREGISTER PUSH TOKEN
+// ===============================
 export const unregisterPushToken = async (req, res) => {
 	try {
 		const userId = req.user._id;
 		const { token } = req.body;
 
-		await User.findByIdAndUpdate(userId, {
-			$pull: { pushTokens: { token } },
-		});
+		const user = await User.findById(userId);
+
+		if (!user) {
+			return res.status(404).json({ error: "User not found" });
+		}
+
+		// Initialize pushTokens array if it doesn't exist
+		if (!user.pushTokens) {
+			user.pushTokens = [];
+		}
+
+		// Remove the token
+		user.pushTokens = user.pushTokens.filter((t) => t.token !== token);
+
+		await user.save();
 
 		res.status(200).json({
 			success: true,
@@ -241,6 +269,9 @@ export const getNotificationSettings = async (req, res) => {
 // ===============================
 // CREATE NOTIFICATION (Admin/System)
 // ===============================
+// ===============================
+// CREATE NOTIFICATION (Admin/System)
+// ===============================
 export const createNotification = async (req, res) => {
 	try {
 		const { userId, title, body, type, data, sendPush = true } = req.body;
@@ -261,8 +292,9 @@ export const createNotification = async (req, res) => {
 		// Send push notification if enabled
 		if (sendPush) {
 			const user = await User.findById(userId);
-			if (user && user.notificationSettings.push_enabled) {
-				const tokens = user.pushTokens.map((t) => t.token);
+			if (user && user.notificationSettings?.push_enabled !== false) {
+				// Safely get tokens
+				const tokens = user.pushTokens?.map((t) => t.token) || [];
 				if (tokens.length > 0) {
 					await sendPush(tokens, {
 						title,
@@ -289,6 +321,9 @@ export const createNotification = async (req, res) => {
 	}
 };
 
+// ===============================
+// SEND BULK NOTIFICATION (Admin)
+// ===============================
 // ===============================
 // SEND BULK NOTIFICATION (Admin)
 // ===============================
@@ -320,8 +355,10 @@ export const sendBulkNotification = async (req, res) => {
 			});
 			notifications.push(notification);
 
-			// Collect push tokens
-			pushTokens.push(...user.pushTokens.map((t) => t.token));
+			// Collect push tokens safely
+			if (user.pushTokens && user.pushTokens.length > 0) {
+				pushTokens.push(...user.pushTokens.map((t) => t.token));
+			}
 		}
 
 		// Send push notifications
