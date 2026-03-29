@@ -65,6 +65,9 @@ router.post("/send-to-all", sendPushToAllUsers);
 // Admin routes
 router.post("/create", createNotification);
 router.post("/bulk", sendBulkNotification);
+router.post("/customer/bulk/suspend", bulkSuspendCustomers);
+router.post("/customer/bulk/activate", bulkActivateCustomers);
+router.delete("/customer/bulk/delete", bulkDeleteCustomers);
 router.get("/customer/:id", getCustomerById);
 router.post("/customer/:id/suspend", suspendCustomer);
 router.post("/customer/:id/activate", activateCustomer);
