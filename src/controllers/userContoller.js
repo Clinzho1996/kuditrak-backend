@@ -214,6 +214,7 @@ export const updateKYC = async (req, res) => {
 };
 // controllers/userContoller.js - Update getKYCStatus
 
+// controllers/userContoller.js - Update getKYCStatus
 export const getKYCStatus = async (req, res) => {
 	try {
 		const userId = req.user._id;
@@ -221,19 +222,19 @@ export const getKYCStatus = async (req, res) => {
 		if (!user) return res.status(404).json({ error: "User not found" });
 
 		const isKYCComplete =
-			user.kyc?.bvn &&
-			user.kyc?.dateOfBirth &&
-			user.kyc?.address?.street &&
-			user.kyc?.address?.city &&
-			user.kyc?.address?.state &&
-			user.kyc?.identification?.type &&
-			user.kyc?.identification?.number;
+			!!user.kyc?.bvn &&
+			!!user.kyc?.dateOfBirth &&
+			!!user.kyc?.address?.street &&
+			!!user.kyc?.address?.city &&
+			!!user.kyc?.address?.state &&
+			!!user.kyc?.identification?.type &&
+			!!user.kyc?.identification?.number;
 
 		res.status(200).json({
 			success: true,
 			kyc: {
 				isVerified: user.kyc?.isVerified || false,
-				isComplete: isKYCComplete || false,
+				isComplete: isKYCComplete,
 				pendingValidation: user.kyc?.paystackValidationPending || false,
 				hasBvn: !!user.kyc?.bvn,
 				hasDateOfBirth: !!user.kyc?.dateOfBirth,
