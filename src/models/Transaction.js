@@ -11,7 +11,7 @@ const transactionSchema = new mongoose.Schema({
 	transactionId: {
 		type: String,
 		unique: true,
-		sparse: true, // This creates the unique index - no need for separate index
+		sparse: true,
 	},
 	amount: { type: Number, required: true },
 	type: { type: String, enum: ["income", "expense"], required: true },
@@ -60,22 +60,39 @@ const transactionSchema = new mongoose.Schema({
 	},
 });
 
-// Indexes for faster queries - remove duplicate transactionId index since it's handled by unique:true
+// Indexes for faster queries
 transactionSchema.index({ userId: 1, createdAt: -1 });
-// REMOVED: transactionSchema.index({ transactionId: 1 }); // Already handled by unique:true
 transactionSchema.index({ status: 1 });
 transactionSchema.index({ source: 1 });
 transactionSchema.index({ type: 1 });
 
-// Pre-save middleware
+// Pre-save middleware with proper error handling
 transactionSchema.pre("save", function (next) {
-	if (!this.date) {
-		this.date = new Date();
+	try {
+		const now = new Date();
+
+		// Set date if not provided
+		if (!this.date) {
+			this.date = now;
+		}
+
+		// Set createdAt if not provided (only for new documents)
+		if (this.isNew && !this.createdAt) {
+			this.createdAt = now;
+		}
+
+		// Always update updatedAt on save
+		this.updatedAt = now;
+
+		next();
+	} catch (error) {
+		next(error);
 	}
-	if (!this.createdAt) {
-		this.createdAt = new Date();
-	}
-	this.updatedAt = new Date();
+});
+
+// Optional: Add pre-update middleware for findOneAndUpdate operations
+transactionSchema.pre("findOneAndUpdate", function (next) {
+	this.set({ updatedAt: new Date() });
 	next();
 });
 
