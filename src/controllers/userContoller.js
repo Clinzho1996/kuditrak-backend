@@ -118,17 +118,109 @@ export const updateProfileImage = async (req, res) => {
 
 // controllers/userContoller.js - Update updateKYC
 
+// controllers/userContoller.js - Complete updateKYC function
+
 export const updateKYC = async (req, res) => {
 	try {
 		const userId = req.user._id;
 		const { bvn, dateOfBirth, address, identification, bankAccount } = req.body;
 
-		const user = await User.findById(userId);
-		if (!user) return res.status(404).json({ error: "User not found" });
+		console.log("🔵 KYC Update Request Started");
+		console.log("User ID:", userId);
+		console.log("User Email:", req.user.email);
 
-		// Verify BVN with Paystack
+		// Find user
+		const user = await User.findById(userId);
+		if (!user) {
+			return res.status(404).json({ error: "User not found" });
+		}
+
+		// Check if already verified
+		if (user.kyc?.isVerified) {
+			console.log("✅ User already verified");
+			return res.status(400).json({
+				success: false,
+				message: "KYC already verified",
+				kyc: {
+					isVerified: true,
+					isComplete: true,
+				},
+			});
+		}
+
+		// Check if validation is already pending
+		if (user.kyc?.paystackValidationPending) {
+			console.log("⚠️ Validation already pending");
+			return res.status(202).json({
+				success: true,
+				pending: true,
+				message:
+					"KYC verification already in progress. You will receive a notification when complete.",
+				kyc: {
+					isVerified: false,
+					isComplete: false,
+					pendingValidation: true,
+				},
+			});
+		}
+
+		// Get user's connected bank account
+		let userBankAccount = null;
+
+		// Use provided bank account or fetch from database
+		if (bankAccount) {
+			userBankAccount = bankAccount;
+			console.log("📝 Using bank account from request:", {
+				accountNumber: userBankAccount.accountNumber,
+				bankCode: userBankAccount.bankCode,
+				bankName: userBankAccount.bankName,
+			});
+		} else {
+			// Fetch user's active bank connection
+			const bankConnection = await BankConnection.findOne({
+				userId: user._id,
+				status: "Active",
+			}).sort({ createdAt: -1 });
+
+			if (bankConnection) {
+				userBankAccount = {
+					accountNumber: bankConnection.accountNumber,
+					bankCode: bankConnection.bankCode,
+					bankName: bankConnection.bankName,
+					accountName: bankConnection.accountName,
+				};
+				console.log("🏦 Found connected bank account:", {
+					accountNumber: userBankAccount.accountNumber,
+					bankCode: userBankAccount.bankCode,
+					bankName: userBankAccount.bankName,
+					accountName: userBankAccount.accountName,
+				});
+			}
+		}
+
+		// Check if bank account is required and available
+		if (bvn && !userBankAccount) {
+			console.log("❌ No bank account found");
+			return res.status(400).json({
+				error: "Bank account required",
+				message:
+					"Please connect a bank account before submitting KYC. Bank account is required for BVN verification.",
+				requiresBankAccount: true,
+			});
+		}
+
+		// Verify BVN if provided
 		if (bvn) {
-			const bvnVerification = await verifyBVN(bvn, user, bankAccount);
+			console.log("🔵 Verifying BVN with bank account...");
+
+			const bvnVerification = await verifyBVN(bvn, user, userBankAccount);
+
+			console.log("BVN Verification Result:", {
+				success: bvnVerification.success,
+				pending: bvnVerification.pending,
+				verified: bvnVerification.verified,
+				message: bvnVerification.message,
+			});
 
 			if (!bvnVerification.success) {
 				return res.status(400).json({
@@ -138,64 +230,177 @@ export const updateKYC = async (req, res) => {
 			}
 
 			if (bvnVerification.pending) {
-				// Save partial KYC data
+				// Save partial KYC data while waiting for verification
 				if (dateOfBirth) user.kyc.dateOfBirth = new Date(dateOfBirth);
 				if (address) {
 					user.kyc.address = {
 						...user.kyc.address,
-						...address,
+						street: address.street || user.kyc.address?.street,
+						city: address.city || user.kyc.address?.city,
+						state: address.state || user.kyc.address?.state,
 						country: address.country || "NG",
 					};
 				}
 				if (identification) {
 					user.kyc.identification = {
 						...user.kyc.identification,
-						...identification,
+						type: identification.type || user.kyc.identification?.type,
+						number: identification.number || user.kyc.identification?.number,
 					};
 				}
 
+				user.kyc.bvn = bvn;
+				user.kyc.paystackValidationPending = true;
+
+				// Save the customer code if returned
+				if (bvnVerification.customerCode) {
+					user.kyc.paystackCustomerCode = bvnVerification.customerCode;
+				}
+
 				await user.save();
+
+				console.log("✅ KYC data saved, waiting for verification webhook");
 
 				return res.status(202).json({
 					success: true,
 					pending: true,
 					message:
-						"KYC verification initiated. You will receive a notification when complete.",
+						"KYC verification initiated with your bank account. You will receive a notification when complete.",
 					kyc: {
 						isVerified: false,
 						isComplete: false,
 						pendingValidation: true,
+						hasBvn: !!user.kyc.bvn,
+						hasDateOfBirth: !!user.kyc.dateOfBirth,
+						hasAddress: !!(
+							user.kyc.address?.street &&
+							user.kyc.address?.city &&
+							user.kyc.address?.state
+						),
+						hasIdentification: !!(
+							user.kyc.identification?.type && user.kyc.identification?.number
+						),
 					},
 				});
 			}
+
+			if (bvnVerification.verified) {
+				// BVN verified successfully
+				user.kyc.bvn = bvn;
+				user.kyc.bvnVerified = true;
+				user.kyc.bvnVerificationData = bvnVerification.data;
+
+				// Update user name from BVN if needed
+				if (
+					bvnVerification.data?.first_name &&
+					bvnVerification.data?.last_name
+				) {
+					const bvnFullName = `${bvnVerification.data.first_name} ${bvnVerification.data.last_name}`;
+					if (bvnFullName !== user.fullName) {
+						console.log(
+							`📝 Updating user name from BVN: "${user.fullName}" -> "${bvnFullName}"`,
+						);
+						user.fullName = bvnFullName;
+					}
+				}
+			}
 		}
 
-		// Save other fields if no BVN or verification complete
-		if (dateOfBirth) user.kyc.dateOfBirth = new Date(dateOfBirth);
+		// Save other KYC fields
+		if (dateOfBirth) {
+			user.kyc.dateOfBirth = new Date(dateOfBirth);
+			console.log("📅 Date of birth saved:", dateOfBirth);
+		}
+
 		if (address) {
 			user.kyc.address = {
-				...user.kyc.address,
-				...address,
+				street: address.street || user.kyc.address?.street,
+				city: address.city || user.kyc.address?.city,
+				state: address.state || user.kyc.address?.state,
 				country: address.country || "NG",
 			};
+			console.log("📍 Address saved:", user.kyc.address);
 		}
+
 		if (identification) {
 			user.kyc.identification = {
-				...user.kyc.identification,
-				...identification,
+				type: identification.type || user.kyc.identification?.type,
+				number: identification.number || user.kyc.identification?.number,
+				imageUrl: identification.imageUrl || user.kyc.identification?.imageUrl,
 			};
+			console.log("🆔 Identification saved:", {
+				type: user.kyc.identification.type,
+				number: user.kyc.identification.number?.substring(0, 4) + "...",
+			});
+		}
+
+		// Check if all required KYC fields are complete
+		const isKYCComplete =
+			!!user.kyc.bvn &&
+			!!user.kyc.dateOfBirth &&
+			!!user.kyc.address?.street &&
+			!!user.kyc.address?.city &&
+			!!user.kyc.address?.state &&
+			!!user.kyc.identification?.type &&
+			!!user.kyc.identification?.number;
+
+		console.log("KYC Complete Check:", {
+			isComplete: isKYCComplete,
+			hasBvn: !!user.kyc.bvn,
+			hasDateOfBirth: !!user.kyc.dateOfBirth,
+			hasAddress: !!(
+				user.kyc.address?.street &&
+				user.kyc.address?.city &&
+				user.kyc.address?.state
+			),
+			hasIdentification: !!(
+				user.kyc.identification?.type && user.kyc.identification?.number
+			),
+		});
+
+		// Auto-verify if all fields are complete and no pending validation
+		if (
+			isKYCComplete &&
+			!user.kyc.paystackValidationPending &&
+			!user.kyc.isVerified
+		) {
+			console.log("✅ All KYC fields complete, marking as verified");
+			user.kyc.isVerified = true;
+			user.kyc.verifiedAt = new Date();
+			user.kyc.bvnVerified = true;
+
+			// Send push notification
+			try {
+				await sendPushToUser(
+					userId,
+					"✅ KYC Verified!",
+					"Your KYC has been verified. You can now fund your wallet via bank transfer!",
+					{ type: "kyc_complete", screen: "topup" },
+				);
+				console.log("📱 Push notification sent to user");
+			} catch (notifError) {
+				console.error("Failed to send notification:", notifError);
+			}
 		}
 
 		await user.save();
+		console.log("✅ User KYC data saved successfully");
 
+		// Return response
 		res.status(200).json({
 			success: true,
-			message: "KYC information saved",
+			message: user.kyc.isVerified
+				? "KYC completed and verified! You can now use bank transfer."
+				: isKYCComplete
+					? "KYC information saved. Verification in progress."
+					: "KYC information saved. Please complete all fields to get verified.",
+			pending: user.kyc.paystackValidationPending || false,
 			kyc: {
 				isVerified: user.kyc.isVerified,
-				isComplete: false,
+				isComplete: isKYCComplete,
 				pendingValidation: user.kyc.paystackValidationPending || false,
 				hasBvn: !!user.kyc.bvn,
+				bvnVerified: user.kyc.bvnVerified || false,
 				hasDateOfBirth: !!user.kyc.dateOfBirth,
 				hasAddress: !!(
 					user.kyc.address?.street &&
@@ -205,11 +410,16 @@ export const updateKYC = async (req, res) => {
 				hasIdentification: !!(
 					user.kyc.identification?.type && user.kyc.identification?.number
 				),
+				verifiedAt: user.kyc.verifiedAt || null,
 			},
 		});
 	} catch (err) {
-		console.error("Update KYC error:", err);
-		res.status(500).json({ error: err.message });
+		console.error("❌ Update KYC error:", err);
+		console.error("Error stack:", err.stack);
+		res.status(500).json({
+			error: err.message,
+			message: "Failed to update KYC. Please try again.",
+		});
 	}
 };
 // controllers/userContoller.js - Update getKYCStatus
