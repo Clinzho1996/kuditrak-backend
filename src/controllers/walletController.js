@@ -8,14 +8,14 @@ import Wallet from "../models/Wallet.js";
 import { getOrCreateVirtualAccount } from "../services/dvaService.js";
 import { sendTopUpNotification } from "../services/notificationService.js";
 import {
+	createTopUp,
 	getOrCreateRecipient,
 	initiatePayout,
 } from "../services/paymentGateway.js";
 
 // ================= DVA (Dedicated Virtual Account) Methods =================
 
-// Get or create virtual account for user
-// controllers/walletController.js
+// controllers/walletController.js - Updated getVirtualAccount
 export const getVirtualAccount = async (req, res) => {
 	try {
 		const result = await getOrCreateVirtualAccount(req.user);
@@ -30,22 +30,23 @@ export const getVirtualAccount = async (req, res) => {
 				provider: result.provider,
 			});
 		} else {
-			// DVA is not available, but that's okay - user can use card
-			console.log("DVA not available, falling back to card payment");
+			// DVA not available - return success:false so frontend uses card
+			console.log("DVA not available:", result?.error);
 			res.json({
 				success: false,
 				available: false,
-				message: result?.error || "Virtual account not available",
+				message: "Bank transfer not available. Please use card payment.",
 				fallbackToCard: true,
 			});
 		}
 	} catch (err) {
 		console.error("Get virtual account error:", err);
-		// Always return 200 with success:false so frontend can handle gracefully
+		// Always return 200 with success:false
 		res.json({
 			success: false,
 			available: false,
-			message: "Virtual account service temporarily unavailable",
+			message:
+				"Bank transfer temporarily unavailable. Please use card payment.",
 			fallbackToCard: true,
 		});
 	}

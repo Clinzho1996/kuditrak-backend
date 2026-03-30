@@ -15,15 +15,15 @@ const bankConnectionSchema = new mongoose.Schema(
 
 		accountName: {
 			type: String,
-			required: true, // Keep required - we'll use placeholders
+			required: true,
 		},
 		accountNumber: {
 			type: String,
-			required: true, // Keep required - we'll use placeholders
+			required: true,
 		},
 		bankName: {
 			type: String,
-			required: true, // Keep required - we'll use placeholders
+			required: true,
 		},
 		bankCode: {
 			type: String,
@@ -40,7 +40,7 @@ const bankConnectionSchema = new mongoose.Schema(
 		recipientCode: {
 			type: String,
 			default: null,
-			index: true,
+			// REMOVED: index: true - will be defined in schema.index()
 		},
 
 		balance: {
@@ -77,9 +77,9 @@ const bankConnectionSchema = new mongoose.Schema(
 	},
 );
 
-// Add indexes
+// Remove duplicate indexes - keep only one definition per index
 bankConnectionSchema.index({ userId: 1, status: 1 });
-bankConnectionSchema.index({ monoAccountId: 1 });
-bankConnectionSchema.index({ recipientCode: 1 });
+bankConnectionSchema.index({ unique: true, sparse: true });
+bankConnectionSchema.index({ recipientCode: 1 }); // Only defined here now
 
 export default mongoose.model("BankConnection", bankConnectionSchema);

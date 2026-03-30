@@ -11,7 +11,7 @@ const transactionSchema = new mongoose.Schema({
 	transactionId: {
 		type: String,
 		unique: true,
-		sparse: true, // only applies uniqueness to documents that have a value
+		sparse: true, // This creates the unique index - no need for separate index
 	},
 	amount: { type: Number, required: true },
 	type: { type: String, enum: ["income", "expense"], required: true },
@@ -26,13 +26,13 @@ const transactionSchema = new mongoose.Schema({
 	source: {
 		type: String,
 		enum: [
-			"wallet", // Internal wallet transfers
-			"bank", // Bank transfers (withdrawals)
-			"manual", // Manual entries
-			"savings", // Savings bucket allocations
-			"penalty", // Early withdrawal penalties
-			"card", // Card payments (standard Paystack)
-			"virtual_account", // DVA bank transfers
+			"wallet",
+			"bank",
+			"manual",
+			"savings",
+			"penalty",
+			"card",
+			"virtual_account",
 		],
 		default: "manual",
 	},
@@ -60,14 +60,14 @@ const transactionSchema = new mongoose.Schema({
 	},
 });
 
-// Indexes for faster queries
+// Indexes for faster queries - remove duplicate transactionId index since it's handled by unique:true
 transactionSchema.index({ userId: 1, createdAt: -1 });
-transactionSchema.index({ transactionId: 1 });
+// REMOVED: transactionSchema.index({ transactionId: 1 }); // Already handled by unique:true
 transactionSchema.index({ status: 1 });
 transactionSchema.index({ source: 1 });
 transactionSchema.index({ type: 1 });
 
-// Pre-save middleware to set date if not provided
+// Pre-save middleware
 transactionSchema.pre("save", function (next) {
 	if (!this.date) {
 		this.date = new Date();
