@@ -3,6 +3,7 @@ import axios from "axios";
 import mongoose from "mongoose";
 import BankConnection from "../models/BankConnection.js";
 import Transaction from "../models/Transaction.js";
+import userVirtualAccount from "../models/userVirtualAccount.js";
 import Wallet from "../models/Wallet.js";
 import { getOrCreateVirtualAccount } from "../services/dvaService.js";
 import { sendTopUpNotification } from "../services/notificationService.js";
@@ -10,31 +11,43 @@ import {
 	getOrCreateRecipient,
 	initiatePayout,
 } from "../services/paymentGateway.js";
-import userVirtualAccount from "../models/userVirtualAccount.js";
 
 // ================= DVA (Dedicated Virtual Account) Methods =================
 
 // Get or create virtual account for user
+// controllers/walletController.js
 export const getVirtualAccount = async (req, res) => {
 	try {
 		const result = await getOrCreateVirtualAccount(req.user);
 
-		if (result.success) {
+		if (result && result.success) {
 			res.json({
 				success: true,
+				available: true,
 				accountNumber: result.accountNumber,
 				bankName: result.bankName,
 				accountName: result.accountName,
 				provider: result.provider,
 			});
 		} else {
-			res
-				.status(500)
-				.json({ success: false, error: "Failed to create virtual account" });
+			// DVA is not available, but that's okay - user can use card
+			console.log("DVA not available, falling back to card payment");
+			res.json({
+				success: false,
+				available: false,
+				message: result?.error || "Virtual account not available",
+				fallbackToCard: true,
+			});
 		}
 	} catch (err) {
 		console.error("Get virtual account error:", err);
-		res.status(500).json({ error: err.message });
+		// Always return 200 with success:false so frontend can handle gracefully
+		res.json({
+			success: false,
+			available: false,
+			message: "Virtual account service temporarily unavailable",
+			fallbackToCard: true,
+		});
 	}
 };
 
