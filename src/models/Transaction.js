@@ -19,7 +19,7 @@ const transactionSchema = new mongoose.Schema({
 	categoryName: String,
 	source: {
 		type: String,
-		enum: ["bank", "manual", "wallet"],
+		enum: ["wallet", "bank", "manual", "savings", "penalty"],
 		default: "manual",
 	},
 	budgetId: {
