@@ -642,21 +642,20 @@ export const withdrawFromBucket = async (req, res) => {
 			// So: amount * 1.2 <= bucket.currentAmount
 			// Therefore: amount <= bucket.currentAmount / 1.2
 
-			const maxWithdrawable = Math.floor(bucket.currentAmount / 1.2);
+			const maxWithdrawable = Math.floor(bucket.currentAmount / 1.07);
 
 			if (amount > maxWithdrawable) {
 				return res.status(400).json({
 					error: `With this locked bucket, you can only withdraw up to ₦${maxWithdrawable} (₦${(maxWithdrawable * 0.2).toFixed(2)} penalty will be applied). You requested ₦${amount}.`,
 					maxWithdrawable,
-					penaltyRate: "20%",
+					penaltyRate: "7%",
 				});
 			}
 
 			const penaltyDetails = bucket.calculatePenalty(amount);
 			penalty = penaltyDetails.penalty;
-			amountToWithdraw = penaltyDetails.totalDeduction; // Total to deduct from bucket
-
-			penaltyMessage = ` Early withdrawal penalty (20%): ₦${penalty.toFixed(2)} applied.`;
+			totalDeduction = penaltyDetails.totalDeduction;
+			penaltyMessage = ` Early withdrawal penalty (7%): ₦${penalty.toFixed(2)} applied.`;
 
 			console.log(`Locked bucket penalty: ₦${penalty}`);
 		}
@@ -685,7 +684,7 @@ export const withdrawFromBucket = async (req, res) => {
 					bucketName: bucket.name,
 					withdrawAmount: amount,
 					penaltyAmount: penalty,
-					penaltyMultiplier: 1.2,
+					penaltyMultiplier: 1.07,
 				},
 			});
 		}
@@ -742,7 +741,7 @@ export const getBucketStats = async (req, res) => {
 				(bucket.lockSettings.unlockDate - now) / (1000 * 60 * 60 * 24),
 			);
 			lockInfo.daysRemaining = daysRemaining;
-			lockInfo.penaltyMultiplier = 1.2;
+			lockInfo.penaltyMultiplier = 1.07;
 		}
 
 		res.json({

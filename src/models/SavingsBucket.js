@@ -52,8 +52,8 @@ savingsBucketSchema.virtual("canWithdrawEarly").get(function () {
 
 // Method to calculate early withdrawal penalty (1.2x the withdrawal amount)
 savingsBucketSchema.methods.calculatePenalty = function (withdrawAmount) {
-	const penaltyMultiplier = 1.2;
-	const penalty = withdrawAmount * (penaltyMultiplier - 1); // 20% penalty
+	const penaltyMultiplier = 1.07;
+	const penalty = withdrawAmount * (penaltyMultiplier - 1); // 7% penalty
 	return {
 		penalty,
 		totalDeduction: withdrawAmount + penalty,
