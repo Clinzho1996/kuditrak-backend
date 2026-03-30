@@ -646,7 +646,7 @@ export const withdrawFromBucket = async (req, res) => {
 
 			if (amount > maxWithdrawable) {
 				return res.status(400).json({
-					error: `With this locked bucket, you can only withdraw up to ₦${maxWithdrawable} (₦${(maxWithdrawable * 0.2).toFixed(2)} penalty will be applied). You requested ₦${amount}.`,
+					error: `With this locked bucket, you can only withdraw up to ₦${maxWithdrawable} (₦${(maxWithdrawable * 0.07).toFixed(2)} penalty will be applied). You requested ₦${amount}.`,
 					maxWithdrawable,
 					penaltyRate: "7%",
 				});
