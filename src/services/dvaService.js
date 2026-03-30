@@ -64,7 +64,7 @@ export const createVirtualAccount = async (user) => {
 // Get user's virtual account
 export const getUserVirtualAccount = async (userId) => {
 	try {
-		const virtualAccount = await UserVirtualAccount.findOne({
+		const virtualAccount = await userVirtualAccount.findOne({
 			userId,
 			isActive: true,
 		});
@@ -89,7 +89,7 @@ export const getOrCreateVirtualAccount = async (user) => {
 // Deactivate virtual account
 export const deactivateVirtualAccount = async (userId) => {
 	try {
-		await UserVirtualAccount.updateOne(
+		await userVirtualAccount.updateOne(
 			{ userId, isActive: true },
 			{ isActive: false, updatedAt: new Date() },
 		);
