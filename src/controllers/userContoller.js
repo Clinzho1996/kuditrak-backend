@@ -88,9 +88,8 @@ export const updateProfileImage = async (req, res) => {
 	}
 };
 
-// backend/controllers/userController.js - Add these endpoints
+// controllers/userContoller.js - Update your updateKYC function
 
-// Update KYC information
 export const updateKYC = async (req, res) => {
 	try {
 		const userId = req.user._id;
@@ -101,11 +100,30 @@ export const updateKYC = async (req, res) => {
 			return res.status(404).json({ error: "User not found" });
 		}
 
-		// Update KYC fields
-		if (bvn) user.kyc.bvn = bvn;
+		// STEP 1: Verify BVN with Paystack
+		if (bvn) {
+			const bvnVerification = await verifyBVN(bvn, user);
+
+			if (!bvnVerification.success) {
+				return res.status(400).json({
+					error: "BVN verification failed",
+					message: bvnVerification.message,
+				});
+			}
+
+			// BVN is valid, save it
+			user.kyc.bvn = bvn;
+			user.kyc.bvnVerified = true;
+			user.kyc.bvnVerificationData = bvnVerification.data;
+		}
+
 		if (dateOfBirth) user.kyc.dateOfBirth = new Date(dateOfBirth);
 		if (address) {
-			user.kyc.address = { ...user.kyc.address, ...address };
+			user.kyc.address = {
+				...user.kyc.address,
+				...address,
+				country: address.country || "NG",
+			};
 		}
 		if (identification) {
 			user.kyc.identification = {
@@ -117,6 +135,7 @@ export const updateKYC = async (req, res) => {
 		// Check if all required KYC fields are complete
 		const isKYCComplete =
 			user.kyc.bvn &&
+			user.kyc.bvnVerified && // BVN must be verified
 			user.kyc.dateOfBirth &&
 			user.kyc.address?.street &&
 			user.kyc.address?.city &&
@@ -128,13 +147,17 @@ export const updateKYC = async (req, res) => {
 			user.kyc.isVerified = true;
 			user.kyc.verifiedAt = new Date();
 
-			// Send notification that KYC is complete and DVA is now available
-			await sendPushToUser(
-				userId,
-				"✅ KYC Verified!",
-				"Your KYC has been verified. You can now fund your wallet via bank transfer!",
-				{ type: "kyc_complete", screen: "topup" },
-			);
+			// Send notification that KYC is complete
+			try {
+				await sendPushToUser(
+					userId,
+					"✅ KYC Verified!",
+					"Your KYC has been verified. You can now fund your wallet via bank transfer!",
+					{ type: "kyc_complete", screen: "topup" },
+				);
+			} catch (notifError) {
+				console.error("Failed to send KYC notification:", notifError);
+			}
 		}
 
 		await user.save();
@@ -144,10 +167,18 @@ export const updateKYC = async (req, res) => {
 			message: "KYC information updated successfully",
 			kyc: {
 				isVerified: user.kyc.isVerified,
+				isComplete: isKYCComplete,
 				hasBvn: !!user.kyc.bvn,
+				bvnVerified: user.kyc.bvnVerified || false,
 				hasDateOfBirth: !!user.kyc.dateOfBirth,
-				hasAddress: !!user.kyc.address?.street,
-				hasIdentification: !!user.kyc.identification?.type,
+				hasAddress: !!(
+					user.kyc.address?.street &&
+					user.kyc.address?.city &&
+					user.kyc.address?.state
+				),
+				hasIdentification: !!(
+					user.kyc.identification?.type && user.kyc.identification?.number
+				),
 			},
 		});
 	} catch (err) {
@@ -155,7 +186,6 @@ export const updateKYC = async (req, res) => {
 		res.status(500).json({ error: err.message });
 	}
 };
-
 // Get KYC status
 export const getKYCStatus = async (req, res) => {
 	try {

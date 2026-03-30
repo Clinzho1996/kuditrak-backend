@@ -20,6 +20,8 @@ const userSchema = new mongoose.Schema({
 	kyc: {
 		bvn: { type: String, default: null },
 		dateOfBirth: { type: Date, default: null },
+		bvnVerified: { type: Boolean, default: false },
+		bvnVerificationData: { type: mongoose.Schema.Types.Mixed, default: null },
 		address: {
 			street: { type: String, default: null },
 			city: { type: String, default: null },

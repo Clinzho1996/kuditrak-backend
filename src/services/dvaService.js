@@ -14,6 +14,7 @@ export const hasCompletedKYC = async (userId) => {
 	return !!(
 		user.kyc?.isVerified &&
 		user.kyc.bvn &&
+		user.kyc.bvnVerified &&
 		user.kyc.dateOfBirth &&
 		user.kyc.address?.street &&
 		user.kyc.identification?.type &&
@@ -196,6 +197,52 @@ export const getOrCreateVirtualAccount = async (user) => {
 	}
 };
 
+// services/dvaService.js - Add this function
+
+// Verify BVN with Paystack
+export const verifyBVN = async (bvn, user) => {
+	try {
+		// Paystack BVN verification endpoint
+		const response = await axios.post(
+			`${PAYSTACK_BASE_URL}/bank/verify_bvn`,
+			{
+				bvn: bvn,
+				first_name: user.fullName?.split(" ")[0] || "User",
+				last_name: user.fullName?.split(" ")[1] || "Account",
+				date_of_birth: user.kyc?.dateOfBirth?.toISOString().split("T")[0],
+				phone: user.phoneNumber || "08000000000",
+			},
+			{
+				headers: {
+					Authorization: `Bearer ${PAYSTACK_SECRET}`,
+					"Content-Type": "application/json",
+				},
+			},
+		);
+
+		if (response.data.status) {
+			return {
+				success: true,
+				data: response.data.data,
+				message: "BVN verified successfully",
+			};
+		} else {
+			return {
+				success: false,
+				message: response.data.message || "BVN verification failed",
+			};
+		}
+	} catch (error) {
+		console.error(
+			"BVN verification error:",
+			error.response?.data || error.message,
+		);
+		return {
+			success: false,
+			message: error.response?.data?.message || "BVN verification failed",
+		};
+	}
+};
 // Get user's virtual account
 export const getUserVirtualAccount = async (userId) => {
 	try {
