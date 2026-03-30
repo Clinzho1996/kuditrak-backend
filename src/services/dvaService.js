@@ -28,34 +28,74 @@ export const getAvailableBanks = async () => {
 	}
 };
 
-// Create a dedicated virtual account for a user using the assign endpoint
+// Create a dedicated virtual account for a user
+// Using the /customer endpoint first, then assign DVA
 export const createVirtualAccount = async (user) => {
 	try {
 		console.log(`Creating virtual account for user: ${user._id}`);
 
-		// First, get available banks
-		const availableBanks = await getAvailableBanks();
+		// Step 1: Create or get customer in Paystack
+		let customerCode;
 
-		// Get the first available bank slug
-		let preferredBank = null;
-		if (availableBanks.length > 0) {
-			preferredBank = availableBanks[0].provider_slug;
-			console.log(`Using available bank: ${preferredBank}`);
-		} else {
-			preferredBank = "wema-bank"; // Fallback
+		// First, try to find existing customer
+		try {
+			const searchResponse = await axios.get(`${PAYSTACK_BASE_URL}/customer`, {
+				params: { email: user.email },
+				headers: {
+					Authorization: `Bearer ${PAYSTACK_SECRET}`,
+				},
+			});
+
+			if (searchResponse.data.data && searchResponse.data.data.length > 0) {
+				customerCode = searchResponse.data.data[0].customer_code;
+				console.log(`Found existing customer: ${customerCode}`);
+			}
+		} catch (error) {
+			console.log("Customer not found, will create new one");
 		}
 
-		// Use the /assign endpoint instead of /dedicated_account
-		// This endpoint creates a customer and assigns a DVA in one go
-		const response = await axios.post(
-			`${PAYSTACK_BASE_URL}/dedicated_account/assign`,
+		// Create customer if not exists
+		if (!customerCode) {
+			const createResponse = await axios.post(
+				`${PAYSTACK_BASE_URL}/customer`,
+				{
+					email: user.email,
+					first_name: user.firstName || user.name?.split(" ")[0] || "User",
+					last_name: user.lastName || user.name?.split(" ")[1] || "Account",
+					phone: user.phone || "08000000000",
+				},
+				{
+					headers: {
+						Authorization: `Bearer ${PAYSTACK_SECRET}`,
+						"Content-Type": "application/json",
+					},
+				},
+			);
+
+			if (createResponse.data.status) {
+				customerCode = createResponse.data.data.customer_code;
+				console.log(`Created new customer: ${customerCode}`);
+			} else {
+				throw new Error("Failed to create customer");
+			}
+		}
+
+		// Step 2: Get available banks and choose the first one
+		const availableBanks = await getAvailableBanks();
+		let preferredBank = "wema-bank";
+
+		if (availableBanks.length > 0) {
+			preferredBank = availableBanks[0].provider_slug;
+		}
+
+		console.log(`Using bank: ${preferredBank}`);
+
+		// Step 3: Create dedicated virtual account for the customer
+		const dvaResponse = await axios.post(
+			`${PAYSTACK_BASE_URL}/dedicated_account`,
 			{
-				email: user.email,
-				first_name: user.firstName || user.name?.split(" ")[0] || "User",
-				last_name: user.lastName || user.name?.split(" ")[1] || "Account",
-				phone: user.phone || "08000000000",
+				customer: customerCode,
 				preferred_bank: preferredBank,
-				country: "NG",
 			},
 			{
 				headers: {
@@ -66,52 +106,34 @@ export const createVirtualAccount = async (user) => {
 			},
 		);
 
-		console.log("Assign DVA response:", response.data);
+		console.log("DVA creation response:", dvaResponse.data);
 
-		// The assign endpoint returns a message that the account is being created
-		// We need to wait a bit and then fetch the account details
-		if (response.data.status) {
-			// Wait 2 seconds for the account to be created
-			await new Promise((resolve) => setTimeout(resolve, 2000));
+		if (dvaResponse.data.status) {
+			const data = dvaResponse.data.data;
 
-			// Fetch the created virtual account
-			const fetchResponse = await axios.get(
-				`${PAYSTACK_BASE_URL}/dedicated_account?customer=${user.email}`,
-				{
-					headers: {
-						Authorization: `Bearer ${PAYSTACK_SECRET}`,
-					},
-				},
+			// Create virtual account record
+			const virtualAccount = await userVirtualAccount.create({
+				userId: user._id,
+				accountNumber: data.account_number,
+				bankName: data.bank.name,
+				accountName: data.account_name,
+				provider: data.bank.slug,
+				customerCode: customerCode,
+				isActive: true,
+			});
+
+			console.log(
+				`✅ Virtual account created: ${data.account_number} (${data.bank.name}) for user ${user._id}`,
 			);
 
-			const accounts = fetchResponse.data.data;
-			if (accounts && accounts.length > 0) {
-				const account = accounts[0];
-
-				// Create virtual account record
-				const virtualAccount = await userVirtualAccount.create({
-					userId: user._id,
-					accountNumber: account.account_number,
-					bankName: account.bank.name,
-					accountName: account.account_name,
-					provider: account.bank.slug,
-					customerCode: account.customer?.customer_code,
-					isActive: true,
-				});
-
-				console.log(
-					`✅ Virtual account created: ${account.account_number} (${account.bank.name}) for user ${user._id}`,
-				);
-
-				return {
-					success: true,
-					accountNumber: account.account_number,
-					bankName: account.bank.name,
-					accountName: account.account_name,
-					provider: account.bank.slug,
-					virtualAccount,
-				};
-			}
+			return {
+				success: true,
+				accountNumber: data.account_number,
+				bankName: data.bank.name,
+				accountName: data.account_name,
+				provider: data.bank.slug,
+				virtualAccount,
+			};
 		}
 
 		throw new Error("Failed to create virtual account");
@@ -121,11 +143,13 @@ export const createVirtualAccount = async (user) => {
 			error.response?.data || error.message,
 		);
 
-		// Check if error is about customer identification
-		if (error.response?.data?.message?.includes("identified")) {
-			console.log(
-				"Customer needs identification - this may require BVN verification",
-			);
+		// Provide a user-friendly error message
+		const errorMessage = error.response?.data?.message || error.message;
+
+		if (errorMessage.includes("customer")) {
+			console.log("Customer creation/retrieval failed");
+		} else if (errorMessage.includes("bank")) {
+			console.log("Bank selection failed");
 		}
 
 		return {
