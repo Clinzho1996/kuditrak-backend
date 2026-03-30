@@ -28,120 +28,105 @@ export const getAvailableBanks = async () => {
 	}
 };
 
-// Create a dedicated virtual account for a user
+// Create a dedicated virtual account for a user using the assign endpoint
 export const createVirtualAccount = async (user) => {
 	try {
 		console.log(`Creating virtual account for user: ${user._id}`);
 
-		// First, try to get available banks
+		// First, get available banks
 		const availableBanks = await getAvailableBanks();
 
-		// List of bank slugs to try in order
-		const bankSlugsToTry = [
-			"wema-bank", // Wema Bank (correct slug)
-			"paystack-titan", // Paystack Titan (if available)
-			"wema", // Fallback
-		];
+		// Get the first available bank slug
+		let preferredBank = null;
+		if (availableBanks.length > 0) {
+			preferredBank = availableBanks[0].provider_slug;
+			console.log(`Using available bank: ${preferredBank}`);
+		} else {
+			preferredBank = "wema-bank"; // Fallback
+		}
 
-		let lastError = null;
+		// Use the /assign endpoint instead of /dedicated_account
+		// This endpoint creates a customer and assigns a DVA in one go
+		const response = await axios.post(
+			`${PAYSTACK_BASE_URL}/dedicated_account/assign`,
+			{
+				email: user.email,
+				first_name: user.firstName || user.name?.split(" ")[0] || "User",
+				last_name: user.lastName || user.name?.split(" ")[1] || "Account",
+				phone: user.phone || "08000000000",
+				preferred_bank: preferredBank,
+				country: "NG",
+			},
+			{
+				headers: {
+					Authorization: `Bearer ${PAYSTACK_SECRET}`,
+					"Content-Type": "application/json",
+				},
+				timeout: 15000,
+			},
+		);
 
-		for (const bankSlug of bankSlugsToTry) {
-			// If we have available banks, check if this slug exists
-			if (availableBanks.length > 0) {
-				const bankExists = availableBanks.some(
-					(bank) =>
-						bank.provider_slug === bankSlug ||
-						bank.bank_name?.toLowerCase().includes(bankSlug),
-				);
-				if (
-					!bankExists &&
-					bankSlug !== bankSlugsToTry[bankSlugsToTry.length - 1]
-				) {
-					console.log(`${bankSlug} not in available banks, trying next...`);
-					continue;
-				}
-			}
+		console.log("Assign DVA response:", response.data);
 
-			try {
-				console.log(`Attempting to create account with bank: ${bankSlug}`);
+		// The assign endpoint returns a message that the account is being created
+		// We need to wait a bit and then fetch the account details
+		if (response.data.status) {
+			// Wait 2 seconds for the account to be created
+			await new Promise((resolve) => setTimeout(resolve, 2000));
 
-				const response = await axios.post(
-					`${PAYSTACK_BASE_URL}/dedicated_account`,
-					{
-						customer: user.email,
-						phone: user.phone || "08000000000",
-						first_name: user.firstName || user.name?.split(" ")[0] || "User",
-						last_name: user.lastName || user.name?.split(" ")[1] || "Account",
-						preferred_bank: bankSlug,
+			// Fetch the created virtual account
+			const fetchResponse = await axios.get(
+				`${PAYSTACK_BASE_URL}/dedicated_account?customer=${user.email}`,
+				{
+					headers: {
+						Authorization: `Bearer ${PAYSTACK_SECRET}`,
 					},
-					{
-						headers: {
-							Authorization: `Bearer ${PAYSTACK_SECRET}`,
-							"Content-Type": "application/json",
-						},
-						timeout: 15000,
-					},
-				);
+				},
+			);
 
-				const data = response.data.data;
+			const accounts = fetchResponse.data.data;
+			if (accounts && accounts.length > 0) {
+				const account = accounts[0];
 
 				// Create virtual account record
 				const virtualAccount = await userVirtualAccount.create({
 					userId: user._id,
-					accountNumber: data.account_number,
-					bankName: data.bank.name,
-					accountName: data.account_name,
-					provider: data.provider || bankSlug,
-					customerCode: data.customer?.customer_code,
+					accountNumber: account.account_number,
+					bankName: account.bank.name,
+					accountName: account.account_name,
+					provider: account.bank.slug,
+					customerCode: account.customer?.customer_code,
 					isActive: true,
 				});
 
 				console.log(
-					`✅ Virtual account created: ${data.account_number} (${data.bank.name}) for user ${user._id}`,
+					`✅ Virtual account created: ${account.account_number} (${account.bank.name}) for user ${user._id}`,
 				);
 
 				return {
 					success: true,
-					accountNumber: data.account_number,
-					bankName: data.bank.name,
-					accountName: data.account_name,
-					provider: data.provider || bankSlug,
+					accountNumber: account.account_number,
+					bankName: account.bank.name,
+					accountName: account.account_name,
+					provider: account.bank.slug,
 					virtualAccount,
 				};
-			} catch (error) {
-				lastError = error;
-				console.error(
-					`Failed with bank ${bankSlug}:`,
-					error.response?.data?.message || error.message,
-				);
-
-				// If it's a "not available" error, continue to next bank
-				if (
-					error.response?.data?.message?.toLowerCase().includes("not available")
-				) {
-					console.log(`${bankSlug} not available, trying next...`);
-					continue;
-				}
-
-				// If it's any other error, we still try the next bank
-				console.log(`Error with ${bankSlug}, trying next bank...`);
 			}
 		}
 
-		// If we get here, all banks failed
-		console.error("All banks failed to create virtual account");
-
-		// Return a structured failure instead of throwing
-		return {
-			success: false,
-			error:
-				"Virtual account service is currently unavailable. Please use card payment instead.",
-		};
+		throw new Error("Failed to create virtual account");
 	} catch (error) {
 		console.error(
 			"Create virtual account error:",
 			error.response?.data || error.message,
 		);
+
+		// Check if error is about customer identification
+		if (error.response?.data?.message?.includes("identified")) {
+			console.log(
+				"Customer needs identification - this may require BVN verification",
+			);
+		}
 
 		return {
 			success: false,

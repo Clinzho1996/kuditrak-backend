@@ -66,34 +66,27 @@ transactionSchema.index({ status: 1 });
 transactionSchema.index({ source: 1 });
 transactionSchema.index({ type: 1 });
 
-// Pre-save middleware with proper error handling
+// Pre-save middleware - FIX: Ensure next is a function
 transactionSchema.pre("save", function (next) {
-	try {
-		const now = new Date();
+	const now = new Date();
 
-		// Set date if not provided
-		if (!this.date) {
-			this.date = now;
-		}
-
-		// Set createdAt if not provided (only for new documents)
-		if (this.isNew && !this.createdAt) {
-			this.createdAt = now;
-		}
-
-		// Always update updatedAt on save
-		this.updatedAt = now;
-
-		next();
-	} catch (error) {
-		next(error);
+	// Set date if not provided
+	if (!this.date) {
+		this.date = now;
 	}
-});
 
-// Optional: Add pre-update middleware for findOneAndUpdate operations
-transactionSchema.pre("findOneAndUpdate", function (next) {
-	this.set({ updatedAt: new Date() });
-	next();
+	// Set createdAt if not provided (only for new documents)
+	if (this.isNew && !this.createdAt) {
+		this.createdAt = now;
+	}
+
+	// Always update updatedAt on save
+	this.updatedAt = now;
+
+	// Only call next if it's a function
+	if (typeof next === "function") {
+		next();
+	}
 });
 
 export default mongoose.model("Transaction", transactionSchema);
