@@ -7,16 +7,41 @@ const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET;
 const PAYSTACK_BASE_URL = "https://api.paystack.co";
 
 // Verify BVN via Customer Identification
+// services/dvaService.js - Updated verifyBVN
+
 export const verifyBVN = async (bvn, user, bankAccount) => {
 	try {
 		console.log(`🔵 Verifying BVN for user: ${user._id}`);
+
+		// Check if already pending
+		if (user.kyc?.paystackValidationPending) {
+			console.log("⚠️ Validation already pending");
+			return {
+				success: true,
+				pending: true,
+				message: "BVN verification already in progress",
+			};
+		}
+
 		console.log(`📝 BVN: ${bvn}`);
 		console.log(`👤 User name: ${user.fullName}`);
+		console.log(
+			`🏦 Bank Account: ${bankAccount?.accountNumber} (${bankAccount?.bankCode})`,
+		);
+
+		// Validate bank account details
+		if (!bankAccount?.accountNumber || !bankAccount?.bankCode) {
+			console.log("❌ Missing bank account details");
+			return {
+				success: false,
+				message:
+					"Bank account details are required for BVN verification. Please connect a bank account.",
+			};
+		}
 
 		// Step 1: Get or create customer
 		let customerCode;
 
-		// Try to find existing customer
 		try {
 			const searchResponse = await axios.get(`${PAYSTACK_BASE_URL}/customer`, {
 				params: { email: user.email },
@@ -59,23 +84,34 @@ export const verifyBVN = async (bvn, user, bankAccount) => {
 			}
 		}
 
-		// Step 2: Validate customer with BVN
-		// You need the user's bank account details
+		// Save customer code
+		if (!user.kyc?.paystackCustomerCode) {
+			user.kyc.paystackCustomerCode = customerCode;
+			await user.save();
+		}
+
+		// Step 2: Prepare validation payload with REAL bank account details
 		const validationPayload = {
 			country: "NG",
 			type: "bank_account",
-			account_number: bankAccount?.accountNumber || "0111111111", // For test, use test account
+			account_number: bankAccount.accountNumber, // Use real account number
 			bvn: bvn,
-			bank_code: bankAccount?.bankCode || "007", // For test, use test bank code
+			bank_code: bankAccount.bankCode, // Use real bank code
 			first_name: user.fullName?.split(" ")[0] || "",
 			last_name: user.fullName?.split(" ")[1] || "",
 		};
 
+		console.log("📤 Validation payload with REAL bank details:");
+		console.log("   Account Number:", validationPayload.account_number);
+		console.log("   Bank Code:", validationPayload.bank_code);
+		console.log("   BVN:", validationPayload.bvn);
 		console.log(
-			"📤 Validation payload:",
-			JSON.stringify(validationPayload, null, 2),
+			"   Name:",
+			validationPayload.first_name,
+			validationPayload.last_name,
 		);
 
+		// Step 3: Initiate validation
 		const validationResponse = await axios.post(
 			`${PAYSTACK_BASE_URL}/customer/${customerCode}/identification`,
 			validationPayload,
@@ -90,8 +126,7 @@ export const verifyBVN = async (bvn, user, bankAccount) => {
 		console.log("📥 Validation response:", validationResponse.data);
 
 		if (validationResponse.data.status) {
-			// Save customer code and mark validation as pending
-			user.kyc.paystackCustomerCode = customerCode;
+			// Mark validation as pending
 			user.kyc.paystackValidationPending = true;
 			user.kyc.bvn = bvn;
 			await user.save();
@@ -100,8 +135,7 @@ export const verifyBVN = async (bvn, user, bankAccount) => {
 				success: true,
 				pending: true,
 				customerCode: customerCode,
-				message:
-					"BVN verification initiated. You will receive a notification when complete.",
+				message: "BVN verification initiated with your bank account.",
 			};
 		} else {
 			return {
@@ -113,12 +147,13 @@ export const verifyBVN = async (bvn, user, bankAccount) => {
 		console.error("❌ BVN verification error:");
 		console.error("Data:", JSON.stringify(error.response?.data, null, 2));
 
-		// Handle "Pending request already exists"
 		if (error.response?.data?.message === "Pending request already exists") {
+			user.kyc.paystackValidationPending = true;
+			await user.save();
 			return {
 				success: true,
 				pending: true,
-				message: "BVN verification already in progress. Please wait.",
+				message: "BVN verification already in progress",
 			};
 		}
 
@@ -126,7 +161,7 @@ export const verifyBVN = async (bvn, user, bankAccount) => {
 			success: false,
 			message:
 				error.response?.data?.message ||
-				"BVN verification failed. Please try again.",
+				"BVN verification failed. Please check your BVN and bank account.",
 		};
 	}
 };
