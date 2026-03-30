@@ -6,34 +6,169 @@ import userVirtualAccount from "../models/userVirtualAccount.js";
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET;
 const PAYSTACK_BASE_URL = "https://api.paystack.co";
 
-// services/dvaService.js - Updated verifyBVN with direct verification
-
-// services/dvaService.js - Enhanced error logging
-
-export const verifyBVN = async (bvn, user) => {
+// Verify BVN via Customer Identification
+export const verifyBVN = async (bvn, user, bankAccount) => {
 	try {
 		console.log(`🔵 Verifying BVN for user: ${user._id}`);
 		console.log(`📝 BVN: ${bvn}`);
 		console.log(`👤 User name: ${user.fullName}`);
-		console.log(`📞 Phone: ${user.phoneNumber}`);
 
-		// Prepare the request payload
-		const payload = {
+		// Step 1: Get or create customer
+		let customerCode;
+
+		// Try to find existing customer
+		try {
+			const searchResponse = await axios.get(`${PAYSTACK_BASE_URL}/customer`, {
+				params: { email: user.email },
+				headers: {
+					Authorization: `Bearer ${PAYSTACK_SECRET}`,
+				},
+			});
+
+			if (searchResponse.data.data && searchResponse.data.data.length > 0) {
+				customerCode = searchResponse.data.data[0].customer_code;
+				console.log(`✅ Found existing customer: ${customerCode}`);
+			}
+		} catch (error) {
+			console.log("Customer not found, will create new one");
+		}
+
+		// Create customer if not exists
+		if (!customerCode) {
+			const createResponse = await axios.post(
+				`${PAYSTACK_BASE_URL}/customer`,
+				{
+					email: user.email,
+					first_name: user.fullName?.split(" ")[0] || "User",
+					last_name: user.fullName?.split(" ")[1] || "Account",
+					phone: user.phoneNumber || "08000000000",
+				},
+				{
+					headers: {
+						Authorization: `Bearer ${PAYSTACK_SECRET}`,
+						"Content-Type": "application/json",
+					},
+				},
+			);
+
+			if (createResponse.data.status) {
+				customerCode = createResponse.data.data.customer_code;
+				console.log(`✅ Created new customer: ${customerCode}`);
+			} else {
+				throw new Error("Failed to create customer");
+			}
+		}
+
+		// Step 2: Validate customer with BVN
+		// You need the user's bank account details
+		const validationPayload = {
+			country: "NG",
+			type: "bank_account",
+			account_number: bankAccount?.accountNumber || "0111111111", // For test, use test account
 			bvn: bvn,
+			bank_code: bankAccount?.bankCode || "007", // For test, use test bank code
 			first_name: user.fullName?.split(" ")[0] || "",
 			last_name: user.fullName?.split(" ")[1] || "",
-			date_of_birth: user.kyc?.dateOfBirth?.toISOString().split("T")[0] || "",
-			phone: user.phoneNumber || "",
 		};
 
 		console.log(
-			`📤 Paystack request payload:`,
-			JSON.stringify(payload, null, 2),
+			"📤 Validation payload:",
+			JSON.stringify(validationPayload, null, 2),
 		);
 
-		const response = await axios.post(
-			`${PAYSTACK_BASE_URL}/bank/verify_bvn`,
-			payload,
+		const validationResponse = await axios.post(
+			`${PAYSTACK_BASE_URL}/customer/${customerCode}/identification`,
+			validationPayload,
+			{
+				headers: {
+					Authorization: `Bearer ${PAYSTACK_SECRET}`,
+					"Content-Type": "application/json",
+				},
+			},
+		);
+
+		console.log("📥 Validation response:", validationResponse.data);
+
+		if (validationResponse.data.status) {
+			// Save customer code and mark validation as pending
+			user.kyc.paystackCustomerCode = customerCode;
+			user.kyc.paystackValidationPending = true;
+			user.kyc.bvn = bvn;
+			await user.save();
+
+			return {
+				success: true,
+				pending: true,
+				customerCode: customerCode,
+				message:
+					"BVN verification initiated. You will receive a notification when complete.",
+			};
+		} else {
+			return {
+				success: false,
+				message: validationResponse.data.message || "BVN verification failed",
+			};
+		}
+	} catch (error) {
+		console.error("❌ BVN verification error:");
+		console.error("Data:", JSON.stringify(error.response?.data, null, 2));
+
+		// Handle "Pending request already exists"
+		if (error.response?.data?.message === "Pending request already exists") {
+			return {
+				success: true,
+				pending: true,
+				message: "BVN verification already in progress. Please wait.",
+			};
+		}
+
+		return {
+			success: false,
+			message:
+				error.response?.data?.message ||
+				"BVN verification failed. Please try again.",
+		};
+	}
+};
+
+// Create virtual account after validation is complete
+export const createVirtualAccount = async (user) => {
+	try {
+		const customerCode = user.kyc?.paystackCustomerCode;
+		if (!customerCode) {
+			return {
+				success: false,
+				error: "No customer found. Please complete KYC first.",
+			};
+		}
+
+		console.log(`Creating virtual account for customer: ${customerCode}`);
+
+		// Get available banks
+		const banksResponse = await axios.get(
+			`${PAYSTACK_BASE_URL}/dedicated_account/available_providers`,
+			{
+				headers: {
+					Authorization: `Bearer ${PAYSTACK_SECRET}`,
+				},
+			},
+		);
+
+		const availableBanks = banksResponse.data.data || [];
+		let preferredBank = "wema-bank";
+		if (availableBanks.length > 0) {
+			preferredBank = availableBanks[0].provider_slug;
+		}
+
+		console.log(`Using bank: ${preferredBank}`);
+
+		// Create dedicated virtual account
+		const dvaResponse = await axios.post(
+			`${PAYSTACK_BASE_URL}/dedicated_account`,
+			{
+				customer: customerCode,
+				preferred_bank: preferredBank,
+			},
 			{
 				headers: {
 					Authorization: `Bearer ${PAYSTACK_SECRET}`,
@@ -43,51 +178,114 @@ export const verifyBVN = async (bvn, user) => {
 			},
 		);
 
-		console.log(
-			`📥 Paystack response:`,
-			JSON.stringify(response.data, null, 2),
-		);
+		if (dvaResponse.data.status) {
+			const data = dvaResponse.data.data;
 
-		if (response.data.status) {
-			const data = response.data.data;
-			console.log(
-				`✅ BVN verified successfully for ${data.first_name} ${data.last_name}`,
-			);
+			const virtualAccount = await userVirtualAccount.create({
+				userId: user._id,
+				accountNumber: data.account_number,
+				bankName: data.bank.name,
+				accountName: data.account_name,
+				provider: data.bank.slug,
+				customerCode: customerCode,
+				isActive: true,
+			});
+
+			console.log(`✅ Virtual account created: ${data.account_number}`);
 
 			return {
 				success: true,
-				verified: true,
-				data: data,
-				message: "BVN verified successfully",
-			};
-		} else {
-			console.log(`❌ BVN verification failed: ${response.data.message}`);
-			return {
-				success: false,
-				verified: false,
-				message: response.data.message || "BVN verification failed",
+				accountNumber: data.account_number,
+				bankName: data.bank.name,
+				accountName: data.account_name,
+				provider: data.bank.slug,
+				virtualAccount,
 			};
 		}
+
+		throw new Error("Failed to create virtual account");
 	} catch (error) {
-		console.error("❌ BVN verification error:");
-		console.error("Status:", error.response?.status);
-		console.error("Data:", JSON.stringify(error.response?.data, null, 2));
-		console.error("Message:", error.message);
-
-		// Check for specific error types
-		if (error.response?.data?.message) {
-			return {
-				success: false,
-				verified: false,
-				message: error.response.data.message,
-			};
-		}
-
+		console.error(
+			"Create virtual account error:",
+			error.response?.data || error.message,
+		);
 		return {
 			success: false,
-			verified: false,
-			message: "BVN verification failed. Please check your BVN and try again.",
+			error: "Virtual account service unavailable. Please use card payment.",
 		};
+	}
+};
+
+// Webhook handler for customer identification events
+export const handleCustomerIdentificationWebhook = async (event, data) => {
+	try {
+		console.log(`📨 Processing webhook: ${event}`);
+		console.log("Webhook data:", JSON.stringify(data, null, 2));
+
+		if (event === "customeridentification.success") {
+			const { customer_code, identification } = data;
+
+			// Find user by customer_code
+			const user = await User.findOne({
+				"kyc.paystackCustomerCode": customer_code,
+			});
+
+			if (user) {
+				console.log(`✅ User found: ${user._id}`);
+
+				// Update user's KYC status
+				user.kyc.paystackValidated = true;
+				user.kyc.paystackValidationPending = false;
+				user.kyc.isVerified = true;
+				user.kyc.verifiedAt = new Date();
+				user.kyc.bvnVerified = true;
+
+				// Update name from BVN if needed
+				if (identification?.first_name && identification?.last_name) {
+					const fullName = `${identification.first_name} ${identification.last_name}`;
+					if (fullName !== user.fullName) {
+						user.fullName = fullName;
+					}
+				}
+
+				await user.save();
+
+				// Create virtual account now that validation is complete
+				await createVirtualAccount(user);
+
+				console.log(
+					`✅ Customer ${customer_code} validated successfully for user ${user._id}`,
+				);
+
+				// Send push notification
+				try {
+					await sendPushToUser(
+						user._id,
+						"✅ KYC Verified!",
+						"Your KYC has been verified. You can now fund your wallet via bank transfer!",
+						{ type: "kyc_complete", screen: "topup" },
+					);
+				} catch (notifError) {
+					console.error("Failed to send notification:", notifError);
+				}
+			}
+		} else if (event === "customeridentification.failed") {
+			const { customer_code, reason } = data;
+
+			const user = await User.findOne({
+				"kyc.paystackCustomerCode": customer_code,
+			});
+
+			if (user) {
+				user.kyc.paystackValidationPending = false;
+				user.kyc.validationError = reason;
+				await user.save();
+
+				console.log(`❌ Customer validation failed for ${user._id}: ${reason}`);
+			}
+		}
+	} catch (error) {
+		console.error("Webhook handling error:", error);
 	}
 };
 // ================= KYC CHECK =================
@@ -201,149 +399,6 @@ export const validateCustomer = async (customerCode, user) => {
 };
 
 // services/dvaService.js - Simplified createVirtualAccount
-
-export const createVirtualAccount = async (user) => {
-	try {
-		// Check if user has completed KYC
-		const hasKYC = await hasCompletedKYC(user._id);
-		if (!hasKYC) {
-			return {
-				success: false,
-				requiresKYC: true,
-				error: "KYC verification required to use bank transfer funding.",
-			};
-		}
-
-		console.log(`Creating virtual account for user: ${user._id}`);
-
-		// Step 1: Get or create customer in Paystack
-		let customerCode;
-
-		// Try to find existing customer
-		try {
-			const searchResponse = await axios.get(`${PAYSTACK_BASE_URL}/customer`, {
-				params: { email: user.email },
-				headers: {
-					Authorization: `Bearer ${PAYSTACK_SECRET}`,
-				},
-			});
-
-			if (searchResponse.data.data && searchResponse.data.data.length > 0) {
-				customerCode = searchResponse.data.data[0].customer_code;
-				console.log(`Found existing customer: ${customerCode}`);
-			}
-		} catch (error) {
-			console.log("Customer not found, will create new one");
-		}
-
-		// Create customer if not exists
-		if (!customerCode) {
-			const createResponse = await axios.post(
-				`${PAYSTACK_BASE_URL}/customer`,
-				{
-					email: user.email,
-					first_name: user.fullName?.split(" ")[0] || "User",
-					last_name: user.fullName?.split(" ")[1] || "Account",
-					phone: user.phoneNumber || "08000000000",
-					metadata: {
-						userId: user._id.toString(),
-						bvn: user.kyc?.bvn,
-						date_of_birth: user.kyc?.dateOfBirth,
-					},
-				},
-				{
-					headers: {
-						Authorization: `Bearer ${PAYSTACK_SECRET}`,
-						"Content-Type": "application/json",
-					},
-				},
-			);
-
-			if (createResponse.data.status) {
-				customerCode = createResponse.data.data.customer_code;
-				console.log(`Created new customer: ${customerCode}`);
-			} else {
-				throw new Error("Failed to create customer");
-			}
-		}
-
-		// Step 2: Get available banks
-		const banksResponse = await axios.get(
-			`${PAYSTACK_BASE_URL}/dedicated_account/available_providers`,
-			{
-				headers: {
-					Authorization: `Bearer ${PAYSTACK_SECRET}`,
-				},
-			},
-		);
-
-		const availableBanks = banksResponse.data.data || [];
-		let preferredBank = "wema-bank";
-
-		if (availableBanks.length > 0) {
-			preferredBank = availableBanks[0].provider_slug;
-		}
-
-		console.log(`Using bank: ${preferredBank}`);
-
-		// Step 3: Create dedicated virtual account
-		const dvaResponse = await axios.post(
-			`${PAYSTACK_BASE_URL}/dedicated_account`,
-			{
-				customer: customerCode,
-				preferred_bank: preferredBank,
-			},
-			{
-				headers: {
-					Authorization: `Bearer ${PAYSTACK_SECRET}`,
-					"Content-Type": "application/json",
-				},
-				timeout: 15000,
-			},
-		);
-
-		if (dvaResponse.data.status) {
-			const data = dvaResponse.data.data;
-
-			const virtualAccount = await userVirtualAccount.create({
-				userId: user._id,
-				accountNumber: data.account_number,
-				bankName: data.bank.name,
-				accountName: data.account_name,
-				provider: data.bank.slug,
-				customerCode: customerCode,
-				isActive: true,
-			});
-
-			console.log(
-				`✅ Virtual account created: ${data.account_number} for user ${user._id}`,
-			);
-
-			return {
-				success: true,
-				accountNumber: data.account_number,
-				bankName: data.bank.name,
-				accountName: data.account_name,
-				provider: data.bank.slug,
-				virtualAccount,
-			};
-		}
-
-		throw new Error("Failed to create virtual account");
-	} catch (error) {
-		console.error(
-			"Create virtual account error:",
-			error.response?.data || error.message,
-		);
-		return {
-			success: false,
-			requiresKYC: false,
-			error:
-				"Virtual account service is currently unavailable. Please use card payment instead.",
-		};
-	}
-};
-
 // ================= VIRTUAL ACCOUNT MANAGEMENT =================
 
 // Get or create virtual account for user
@@ -417,145 +472,5 @@ export const hasActiveVirtualAccount = async (userId) => {
 	} catch (error) {
 		console.error("Check virtual account error:", error);
 		return false;
-	}
-};
-
-// ================= WEBHOOK HANDLER =================
-
-// Webhook handler for customer identification events
-// services/dvaService.js - Updated webhook handler
-
-// Webhook handler for customer identification events
-export const handleCustomerIdentificationWebhook = async (event, data) => {
-	try {
-		console.log(`📨 Processing webhook: ${event}`);
-
-		if (event === "customeridentification.success") {
-			const { customer_code, identification } = data;
-
-			console.log(`✅ Customer validation success for: ${customer_code}`);
-			console.log(`Identification data:`, identification);
-
-			// Find virtual account by customer_code
-			const virtualAccount = await userVirtualAccount.findOne({
-				customerCode: customer_code,
-			});
-
-			if (virtualAccount) {
-				const user = await User.findById(virtualAccount.userId);
-				if (user) {
-					// Update user's KYC status
-					user.kyc.paystackValidated = true;
-					user.kyc.paystackValidationPending = false;
-					user.kyc.isVerified = true;
-					user.kyc.verifiedAt = new Date();
-
-					// Optionally update name from Paystack if needed
-					if (identification?.first_name && identification?.last_name) {
-						const fullName = `${identification.first_name} ${identification.last_name}`;
-						if (!user.fullName || user.fullName !== fullName) {
-							user.fullName = fullName;
-						}
-					}
-
-					await user.save();
-
-					console.log(
-						`✅ Customer ${customer_code} validated successfully for user ${user._id}`,
-					);
-
-					// Now create the virtual account after validation
-					try {
-						// Get available banks
-						const banksResponse = await axios.get(
-							`${PAYSTACK_BASE_URL}/dedicated_account/available_providers`,
-							{
-								headers: {
-									Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
-								},
-							},
-						);
-
-						const availableBanks = banksResponse.data.data || [];
-						let preferredBank = "wema-bank";
-
-						if (availableBanks.length > 0) {
-							preferredBank = availableBanks[0].provider_slug;
-						}
-
-						// Create dedicated virtual account
-						const dvaResponse = await axios.post(
-							`${PAYSTACK_BASE_URL}/dedicated_account`,
-							{
-								customer: customer_code,
-								preferred_bank: preferredBank,
-							},
-							{
-								headers: {
-									Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
-									"Content-Type": "application/json",
-								},
-								timeout: 15000,
-							},
-						);
-
-						if (dvaResponse.data.status) {
-							const data = dvaResponse.data.data;
-
-							// Update existing virtual account record
-							virtualAccount.accountNumber = data.account_number;
-							virtualAccount.bankName = data.bank.name;
-							virtualAccount.accountName = data.account_name;
-							virtualAccount.provider = data.bank.slug;
-							virtualAccount.isActive = true;
-							await virtualAccount.save();
-
-							console.log(
-								`✅ Virtual account created after validation: ${data.account_number}`,
-							);
-						}
-					} catch (dvaError) {
-						console.error(
-							"Failed to create virtual account after validation:",
-							dvaError,
-						);
-					}
-				}
-			} else {
-				// No virtual account found, but still mark user as validated
-				const user = await User.findOne({
-					"kyc.bvnVerificationData.customer_code": customer_code,
-				});
-				if (user) {
-					user.kyc.paystackValidated = true;
-					user.kyc.paystackValidationPending = false;
-					await user.save();
-					console.log(`✅ User ${user._id} marked as validated`);
-				}
-			}
-		} else if (event === "customeridentification.failed") {
-			const { customer_code, reason } = data;
-
-			console.log(`❌ Customer validation failed for: ${customer_code}`);
-			console.log(`Reason: ${reason}`);
-
-			const virtualAccount = await userVirtualAccount.findOne({
-				customerCode: customer_code,
-			});
-
-			if (virtualAccount) {
-				const user = await User.findById(virtualAccount.userId);
-				if (user) {
-					user.kyc.paystackValidationPending = false;
-					user.kyc.validationError = reason;
-					user.kyc.isVerified = false;
-					await user.save();
-
-					console.log(`❌ User ${user._id} validation failed: ${reason}`);
-				}
-			}
-		}
-	} catch (error) {
-		console.error("Webhook handling error:", error);
 	}
 };

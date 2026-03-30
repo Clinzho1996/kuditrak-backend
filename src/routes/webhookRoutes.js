@@ -1,12 +1,14 @@
+// routes/webhookRoutes.js
 import express from "express";
 import { handleCustomerIdentificationWebhook } from "../services/dvaService.js";
 
 const router = express.Router();
-// routes/webhookRoutes.js - Add this endpoint
-router.post("/paystack/customer-identification", async (req, res) => {
+
+// Paystack webhook endpoint
+router.post("/paystack", async (req, res) => {
 	try {
 		const event = req.body;
-		console.log("Paystack webhook received:", event.event);
+		console.log("📨 Paystack webhook received:", event.event);
 
 		if (
 			event.event === "customeridentification.success" ||
