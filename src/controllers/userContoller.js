@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import BankConnection from "../models/BankConnection.js";
 import User from "../models/User.js";
 import { generateFinancialInsights } from "../services/aiService.js";
+import { verifyBVN } from "../services/dvaService.js";
 import {
 	removeDeviceToken,
 	saveDeviceToken,
