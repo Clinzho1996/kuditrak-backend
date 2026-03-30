@@ -626,6 +626,25 @@ export const withdrawFromBucket = async (req, res) => {
 			return res.status(404).json({ error: "Wallet not found" });
 		}
 
+		// Get or create platform wallet
+		let platformWallet = await Wallet.findOne({
+			userId: process.env.SYSTEM_BUCKET_ID,
+		});
+
+		if (!platformWallet) {
+			platformWallet = await Wallet.create({
+				userId: process.env.SYSTEM_BUCKET_ID,
+				balance: 0,
+				available: 0,
+				allocated: 0,
+				currency: "NGN",
+			});
+			console.log(
+				"Platform wallet created with ID:",
+				process.env.SYSTEM_BUCKET_ID,
+			);
+		}
+
 		let penalty = 0;
 		let totalDeduction = amount; // Initialize with withdrawal amount
 		let penaltyMessage = "";
@@ -658,24 +677,53 @@ export const withdrawFromBucket = async (req, res) => {
 		bucket.currentAmount -= totalDeduction;
 		await bucket.save();
 
-		// Credit wallet with only the withdrawal amount (penalty stays in bucket/platform)
+		// Credit user's wallet with the withdrawal amount
 		wallet.balance += amount;
 		await wallet.save();
 
-		// Create penalty transaction if applicable
+		// If penalty exists, add it to platform wallet
 		if (penalty > 0) {
-			// Optional: Create a penalty record for platform revenue
-			// You can create a separate collection for platform revenue
+			platformWallet.balance += penalty;
+			await platformWallet.save();
+
+			console.log(
+				`Penalty of ₦${penalty} added to platform wallet. New platform balance: ₦${platformWallet.balance}`,
+			);
+		}
+
+		// Create transaction records
+		// 1. User withdrawal transaction
+		await Transaction.create({
+			walletId: wallet._id,
+			userId: req.user._id,
+			transactionId: `WITHDRAW-${bucket._id}-${Date.now()}`,
+			type: "expense",
+			amount: amount,
+			status: "Completed",
+			description: `Withdrawal from bucket: ${bucket.name}`,
+			source: "savings",
+			metadata: {
+				bucketId: bucket._id,
+				bucketName: bucket.name,
+				isLocked: isLocked,
+				penaltyApplied: penalty,
+				totalDeduction: totalDeduction,
+			},
+		});
+
+		// 2. Penalty transaction (if applicable)
+		if (penalty > 0) {
 			await Transaction.create({
-				walletId: wallet._id,
-				userId: req.user._id,
+				walletId: platformWallet._id,
+				userId: process.env.SYSTEM_BUCKET_ID,
 				transactionId: `PENALTY-${bucket._id}-${Date.now()}`,
-				type: "expense",
+				type: "income",
 				amount: penalty,
 				status: "Completed",
-				description: `Early withdrawal penalty for bucket: ${bucket.name}`,
+				description: `Early withdrawal penalty from user ${req.user._id} for bucket: ${bucket.name}`,
 				source: "penalty",
 				metadata: {
+					userId: req.user._id,
 					bucketId: bucket._id,
 					bucketName: bucket.name,
 					withdrawAmount: amount,
@@ -687,12 +735,16 @@ export const withdrawFromBucket = async (req, res) => {
 
 		// Get the updated wallet
 		const updatedWallet = await Wallet.findOne({ userId: req.user._id });
+		const updatedPlatformWallet = await Wallet.findOne({
+			userId: process.env.SYSTEM_BUCKET_ID,
+		});
 
-		console.log(
-			"Updated wallet balance after withdrawal:",
-			updatedWallet.balance,
-		);
+		console.log("Updated user wallet balance:", updatedWallet.balance);
 		console.log("Updated bucket amount:", bucket.currentAmount);
+		console.log(
+			"Updated platform wallet balance:",
+			updatedPlatformWallet.balance,
+		);
 
 		res.status(200).json({
 			success: true,
@@ -703,6 +755,10 @@ export const withdrawFromBucket = async (req, res) => {
 				balance: updatedWallet.balance,
 				allocated: updatedWallet.allocated || 0,
 				available: updatedWallet.balance - (updatedWallet.allocated || 0),
+			},
+			platformWallet: {
+				_id: updatedPlatformWallet._id,
+				balance: updatedPlatformWallet.balance,
 			},
 			withdrawAmount: amount,
 			penaltyApplied: penalty,
