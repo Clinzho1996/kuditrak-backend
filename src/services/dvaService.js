@@ -1,40 +1,42 @@
 // services/dvaService.js
 import axios from "axios";
+import User from "../models/User.js";
 import userVirtualAccount from "../models/userVirtualAccount.js";
 
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET;
 const PAYSTACK_BASE_URL = "https://api.paystack.co";
 
-// Fetch available bank providers
-export const getAvailableBanks = async () => {
-	try {
-		const response = await axios.get(
-			`${PAYSTACK_BASE_URL}/dedicated_account/available_providers`,
-			{
-				headers: {
-					Authorization: `Bearer ${PAYSTACK_SECRET}`,
-				},
-			},
-		);
+// Check if user has completed KYC
+export const hasCompletedKYC = async (userId) => {
+	const user = await User.findById(userId);
+	if (!user) return false;
 
-		console.log("Available DVA banks:", response.data.data);
-		return response.data.data;
-	} catch (error) {
-		console.error(
-			"Error fetching available banks:",
-			error.response?.data || error.message,
-		);
-		return [];
-	}
+	return !!(
+		user.kyc?.isVerified &&
+		user.kyc.bvn &&
+		user.kyc.dateOfBirth &&
+		user.kyc.address?.street &&
+		user.kyc.identification?.type &&
+		user.kyc.identification?.number
+	);
 };
 
 // Create a dedicated virtual account for a user
-// Using the /customer endpoint first, then assign DVA
 export const createVirtualAccount = async (user) => {
 	try {
+		// Check if user has completed KYC
+		const hasKYC = await hasCompletedKYC(user._id);
+		if (!hasKYC) {
+			return {
+				success: false,
+				requiresKYC: true,
+				error: "KYC verification required to use bank transfer funding.",
+			};
+		}
+
 		console.log(`Creating virtual account for user: ${user._id}`);
 
-		// Step 1: Create or get customer in Paystack
+		// Step 1: Get or create customer in Paystack with KYC data
 		let customerCode;
 
 		// First, try to find existing customer
@@ -54,15 +56,20 @@ export const createVirtualAccount = async (user) => {
 			console.log("Customer not found, will create new one");
 		}
 
-		// Create customer if not exists
+		// Create customer if not exists with KYC data
 		if (!customerCode) {
 			const createResponse = await axios.post(
 				`${PAYSTACK_BASE_URL}/customer`,
 				{
 					email: user.email,
-					first_name: user.firstName || user.name?.split(" ")[0] || "User",
-					last_name: user.lastName || user.name?.split(" ")[1] || "Account",
-					phone: user.phone || "08000000000",
+					first_name: user.fullName?.split(" ")[0] || "User",
+					last_name: user.fullName?.split(" ")[1] || "Account",
+					phone: user.phoneNumber || "08000000000",
+					metadata: {
+						bvn: user.kyc?.bvn,
+						date_of_birth: user.kyc?.dateOfBirth,
+						address: user.kyc?.address,
+					},
 				},
 				{
 					headers: {
@@ -74,14 +81,23 @@ export const createVirtualAccount = async (user) => {
 
 			if (createResponse.data.status) {
 				customerCode = createResponse.data.data.customer_code;
-				console.log(`Created new customer: ${customerCode}`);
+				console.log(`Created new customer with KYC: ${customerCode}`);
 			} else {
 				throw new Error("Failed to create customer");
 			}
 		}
 
-		// Step 2: Get available banks and choose the first one
-		const availableBanks = await getAvailableBanks();
+		// Step 2: Get available banks
+		const banksResponse = await axios.get(
+			`${PAYSTACK_BASE_URL}/dedicated_account/available_providers`,
+			{
+				headers: {
+					Authorization: `Bearer ${PAYSTACK_SECRET}`,
+				},
+			},
+		);
+
+		const availableBanks = banksResponse.data.data || [];
 		let preferredBank = "wema-bank";
 
 		if (availableBanks.length > 0) {
@@ -90,7 +106,7 @@ export const createVirtualAccount = async (user) => {
 
 		console.log(`Using bank: ${preferredBank}`);
 
-		// Step 3: Create dedicated virtual account for the customer
+		// Step 3: Create dedicated virtual account
 		const dvaResponse = await axios.post(
 			`${PAYSTACK_BASE_URL}/dedicated_account`,
 			{
@@ -106,12 +122,9 @@ export const createVirtualAccount = async (user) => {
 			},
 		);
 
-		console.log("DVA creation response:", dvaResponse.data);
-
 		if (dvaResponse.data.status) {
 			const data = dvaResponse.data.data;
 
-			// Create virtual account record
 			const virtualAccount = await userVirtualAccount.create({
 				userId: user._id,
 				accountNumber: data.account_number,
@@ -123,7 +136,7 @@ export const createVirtualAccount = async (user) => {
 			});
 
 			console.log(
-				`✅ Virtual account created: ${data.account_number} (${data.bank.name}) for user ${user._id}`,
+				`✅ Virtual account created: ${data.account_number} for user ${user._id}`,
 			);
 
 			return {
@@ -143,19 +156,42 @@ export const createVirtualAccount = async (user) => {
 			error.response?.data || error.message,
 		);
 
-		// Provide a user-friendly error message
-		const errorMessage = error.response?.data?.message || error.message;
-
-		if (errorMessage.includes("customer")) {
-			console.log("Customer creation/retrieval failed");
-		} else if (errorMessage.includes("bank")) {
-			console.log("Bank selection failed");
-		}
-
 		return {
 			success: false,
+			requiresKYC: false,
 			error:
 				"Virtual account service is currently unavailable. Please use card payment instead.",
+		};
+	}
+};
+
+// Get or create virtual account for user
+export const getOrCreateVirtualAccount = async (user) => {
+	try {
+		// Check KYC first
+		const hasKYC = await hasCompletedKYC(user._id);
+		if (!hasKYC) {
+			return {
+				success: false,
+				requiresKYC: true,
+				error:
+					"KYC verification required to use bank transfer funding. Please complete your profile verification.",
+			};
+		}
+
+		let virtualAccount = await getUserVirtualAccount(user._id);
+
+		if (!virtualAccount) {
+			virtualAccount = await createVirtualAccount(user);
+		}
+
+		return virtualAccount;
+	} catch (error) {
+		console.error("Get or create virtual account error:", error.message);
+		return {
+			success: false,
+			requiresKYC: false,
+			error: error.message,
 		};
 	}
 };
@@ -171,25 +207,6 @@ export const getUserVirtualAccount = async (userId) => {
 	} catch (error) {
 		console.error("Get virtual account error:", error);
 		return null;
-	}
-};
-
-// Get or create virtual account for user
-export const getOrCreateVirtualAccount = async (user) => {
-	try {
-		let virtualAccount = await getUserVirtualAccount(user._id);
-
-		if (!virtualAccount) {
-			virtualAccount = await createVirtualAccount(user);
-		}
-
-		return virtualAccount;
-	} catch (error) {
-		console.error("Get or create virtual account error:", error.message);
-		return {
-			success: false,
-			error: error.message,
-		};
 	}
 };
 

@@ -14,11 +14,30 @@ import {
 } from "../services/paymentGateway.js";
 
 // ================= DVA (Dedicated Virtual Account) Methods =================
-
 // controllers/walletController.js - Updated getVirtualAccount
 export const getVirtualAccount = async (req, res) => {
 	try {
-		const result = await getOrCreateVirtualAccount(req.user);
+		// First check if user has completed KYC
+		const user = req.user;
+		const hasKYC =
+			user.kyc?.isVerified &&
+			user.kyc?.bvn &&
+			user.kyc?.dateOfBirth &&
+			user.kyc?.address?.street &&
+			user.kyc?.identification?.type &&
+			user.kyc?.identification?.number;
+
+		if (!hasKYC) {
+			return res.json({
+				success: false,
+				requiresKYC: true,
+				message:
+					"KYC verification required to use bank transfer funding. Please complete your KYC in profile settings.",
+				fallbackToCard: true,
+			});
+		}
+
+		const result = await getOrCreateVirtualAccount(user);
 
 		if (result && result.success) {
 			res.json({
@@ -30,18 +49,18 @@ export const getVirtualAccount = async (req, res) => {
 				provider: result.provider,
 			});
 		} else {
-			// DVA not available - return success:false so frontend uses card
-			console.log("DVA not available:", result?.error);
 			res.json({
 				success: false,
 				available: false,
-				message: "Bank transfer not available. Please use card payment.",
+				requiresKYC: result?.requiresKYC || false,
+				message:
+					result?.error ||
+					"Bank transfer not available. Please use card payment.",
 				fallbackToCard: true,
 			});
 		}
 	} catch (err) {
 		console.error("Get virtual account error:", err);
-		// Always return 200 with success:false
 		res.json({
 			success: false,
 			available: false,

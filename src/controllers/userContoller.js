@@ -88,6 +88,110 @@ export const updateProfileImage = async (req, res) => {
 	}
 };
 
+// backend/controllers/userController.js - Add these endpoints
+
+// Update KYC information
+export const updateKYC = async (req, res) => {
+	try {
+		const userId = req.user._id;
+		const { bvn, dateOfBirth, address, identification } = req.body;
+
+		const user = await User.findById(userId);
+		if (!user) {
+			return res.status(404).json({ error: "User not found" });
+		}
+
+		// Update KYC fields
+		if (bvn) user.kyc.bvn = bvn;
+		if (dateOfBirth) user.kyc.dateOfBirth = new Date(dateOfBirth);
+		if (address) {
+			user.kyc.address = { ...user.kyc.address, ...address };
+		}
+		if (identification) {
+			user.kyc.identification = {
+				...user.kyc.identification,
+				...identification,
+			};
+		}
+
+		// Check if all required KYC fields are complete
+		const isKYCComplete =
+			user.kyc.bvn &&
+			user.kyc.dateOfBirth &&
+			user.kyc.address?.street &&
+			user.kyc.address?.city &&
+			user.kyc.address?.state &&
+			user.kyc.identification?.type &&
+			user.kyc.identification?.number;
+
+		if (isKYCComplete && !user.kyc.isVerified) {
+			user.kyc.isVerified = true;
+			user.kyc.verifiedAt = new Date();
+
+			// Send notification that KYC is complete and DVA is now available
+			await sendPushToUser(
+				userId,
+				"✅ KYC Verified!",
+				"Your KYC has been verified. You can now fund your wallet via bank transfer!",
+				{ type: "kyc_complete", screen: "topup" },
+			);
+		}
+
+		await user.save();
+
+		res.status(200).json({
+			success: true,
+			message: "KYC information updated successfully",
+			kyc: {
+				isVerified: user.kyc.isVerified,
+				hasBvn: !!user.kyc.bvn,
+				hasDateOfBirth: !!user.kyc.dateOfBirth,
+				hasAddress: !!user.kyc.address?.street,
+				hasIdentification: !!user.kyc.identification?.type,
+			},
+		});
+	} catch (err) {
+		console.error("Update KYC error:", err);
+		res.status(500).json({ error: err.message });
+	}
+};
+
+// Get KYC status
+export const getKYCStatus = async (req, res) => {
+	try {
+		const userId = req.user._id;
+		const user = await User.findById(userId);
+
+		if (!user) {
+			return res.status(404).json({ error: "User not found" });
+		}
+
+		const isKYCComplete =
+			user.kyc.bvn &&
+			user.kyc.dateOfBirth &&
+			user.kyc.address?.street &&
+			user.kyc.address?.city &&
+			user.kyc.address?.state &&
+			user.kyc.identification?.type &&
+			user.kyc.identification?.number;
+
+		res.status(200).json({
+			success: true,
+			kyc: {
+				isVerified: user.kyc.isVerified,
+				isComplete: isKYCComplete,
+				hasBvn: !!user.kyc.bvn,
+				hasDateOfBirth: !!user.kyc.dateOfBirth,
+				hasAddress: !!user.kyc.address?.street,
+				hasIdentification: !!user.kyc.identification?.type,
+			},
+		});
+	} catch (err) {
+		console.error("Get KYC status error:", err);
+		res.status(500).json({ error: err.message });
+	}
+};
+
 export const updateProfile = async (req, res) => {
 	try {
 		const { fullName, email, phoneNumber } = req.body;
@@ -128,7 +232,6 @@ export const updateProfile = async (req, res) => {
 		res.status(500).json({ error: err.message });
 	}
 };
-
 /*
 |--------------------------------------------------------------------------
 | Delete Account

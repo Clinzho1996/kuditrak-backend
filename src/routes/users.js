@@ -6,10 +6,12 @@ import {
 	deleteAccount,
 	getDeviceTokens,
 	getInsights,
+	getKYCStatus,
 	getProfile,
 	registerDeviceToken,
 	testPushNotification,
 	unregisterDeviceToken,
+	updateKYC,
 	updateProfile,
 	updateProfileImage,
 } from "../controllers/userContoller.js";
@@ -31,14 +33,26 @@ router.put(
 
 // Get financial insights
 router.get("/insights", protect, getInsights);
+
+// Update profile
 router.put("/profile", protect, updateProfile);
-// backend/routes/userRoutes.js
+
+// ================= KYC Routes =================
+// Update KYC information
+router.post("/kyc", protect, updateKYC);
+
+// Get KYC status
+router.get("/kyc/status", protect, getKYCStatus);
+
+// ================= Push Notification Routes =================
 router.post("/test", protect, testPushNotification);
 router.post("/device-token", protect, registerDeviceToken);
 router.delete("/device-token", protect, unregisterDeviceToken);
-router.get("/check-limit", protect, checkConnectionLimit);
 router.get("/device-tokens", protect, getDeviceTokens);
-router.get('/debug-tokens', protect, debugDeviceTokens);
+router.get("/debug-tokens", protect, debugDeviceTokens);
+
+// ================= Limit Check Routes =================
+router.get("/check-limit", protect, checkConnectionLimit);
 
 // Delete user account
 router.delete("/delete-account", protect, deleteAccount);
