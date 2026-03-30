@@ -116,11 +116,8 @@ export const updateProfileImage = async (req, res) => {
 	}
 };
 
-/*
-|--------------------------------------------------------------------------
-| KYC Management
-|--------------------------------------------------------------------------
-*/
+// controllers/userContoller.js - Update updateKYC function
+
 export const updateKYC = async (req, res) => {
 	try {
 		const userId = req.user._id;
@@ -129,20 +126,74 @@ export const updateKYC = async (req, res) => {
 		const user = await User.findById(userId);
 		if (!user) return res.status(404).json({ error: "User not found" });
 
+		// Check if validation is already pending
+		if (user.kyc?.paystackValidationPending) {
+			return res.status(400).json({
+				success: false,
+				pending: true,
+				message:
+					"KYC verification already in progress. Please wait for confirmation.",
+				kyc: {
+					isVerified: user.kyc.isVerified,
+					isComplete: false,
+					pendingValidation: true,
+				},
+			});
+		}
+
 		// Verify BVN with Paystack if provided
 		if (bvn) {
 			const bvnVerification = await verifyBVN(bvn, user);
+
 			if (!bvnVerification.success) {
 				return res.status(400).json({
 					error: "BVN verification failed",
 					message: bvnVerification.message,
 				});
 			}
-			user.kyc.bvn = bvn;
-			user.kyc.bvnVerified = true;
-			user.kyc.bvnVerificationData = bvnVerification.data;
+
+			if (bvnVerification.pending) {
+				// Save partial KYC data while waiting for validation
+				user.kyc.bvn = bvn;
+				if (dateOfBirth) user.kyc.dateOfBirth = new Date(dateOfBirth);
+				if (address) {
+					user.kyc.address = {
+						...user.kyc.address,
+						...address,
+						country: address.country || "NG",
+					};
+				}
+				if (identification) {
+					user.kyc.identification = {
+						...user.kyc.identification,
+						...identification,
+					};
+				}
+				user.kyc.paystackValidationPending = true;
+				await user.save();
+
+				return res.status(202).json({
+					success: true,
+					pending: true,
+					message:
+						"KYC verification initiated. You will receive a notification when verified.",
+					kyc: {
+						isVerified: false,
+						isComplete: false,
+						pendingValidation: true,
+					},
+				});
+			}
+
+			// If verification succeeded immediately (test mode)
+			if (bvnVerification.success && !bvnVerification.pending) {
+				user.kyc.bvn = bvn;
+				user.kyc.bvnVerified = true;
+				user.kyc.bvnVerificationData = bvnVerification.data;
+			}
 		}
 
+		// Continue with other KYC fields...
 		if (dateOfBirth) user.kyc.dateOfBirth = new Date(dateOfBirth);
 		if (address) {
 			user.kyc.address = {
@@ -158,10 +209,9 @@ export const updateKYC = async (req, res) => {
 			};
 		}
 
-		// Check if all required KYC fields are complete
+		// Check if all required KYC fields are complete (but not necessarily verified)
 		const isKYCComplete =
 			user.kyc.bvn &&
-			user.kyc.bvnVerified &&
 			user.kyc.dateOfBirth &&
 			user.kyc.address?.street &&
 			user.kyc.address?.city &&
@@ -169,7 +219,12 @@ export const updateKYC = async (req, res) => {
 			user.kyc.identification?.type &&
 			user.kyc.identification?.number;
 
-		if (isKYCComplete && !user.kyc.isVerified) {
+		// Only mark as verified if not pending and all fields complete
+		if (
+			isKYCComplete &&
+			!user.kyc.paystackValidationPending &&
+			!user.kyc.isVerified
+		) {
 			user.kyc.isVerified = true;
 			user.kyc.verifiedAt = new Date();
 
@@ -189,10 +244,14 @@ export const updateKYC = async (req, res) => {
 
 		res.status(200).json({
 			success: true,
-			message: "KYC information updated successfully",
+			message: user.kyc.paystackValidationPending
+				? "KYC information saved. Verification in progress."
+				: "KYC information updated successfully",
+			pending: user.kyc.paystackValidationPending || false,
 			kyc: {
 				isVerified: user.kyc.isVerified,
 				isComplete: isKYCComplete,
+				pendingValidation: user.kyc.paystackValidationPending || false,
 				hasBvn: !!user.kyc.bvn,
 				bvnVerified: user.kyc.bvnVerified || false,
 				hasDateOfBirth: !!user.kyc.dateOfBirth,
@@ -211,6 +270,7 @@ export const updateKYC = async (req, res) => {
 		res.status(500).json({ error: err.message });
 	}
 };
+// controllers/userContoller.js - Update getKYCStatus
 
 export const getKYCStatus = async (req, res) => {
 	try {
@@ -232,6 +292,7 @@ export const getKYCStatus = async (req, res) => {
 			kyc: {
 				isVerified: user.kyc?.isVerified || false,
 				isComplete: isKYCComplete || false,
+				pendingValidation: user.kyc?.paystackValidationPending || false,
 				hasBvn: !!user.kyc?.bvn,
 				hasDateOfBirth: !!user.kyc?.dateOfBirth,
 				hasAddress: !!(
@@ -250,7 +311,6 @@ export const getKYCStatus = async (req, res) => {
 		res.status(500).json({ error: err.message });
 	}
 };
-
 /*
 |--------------------------------------------------------------------------
 | Device Token Management

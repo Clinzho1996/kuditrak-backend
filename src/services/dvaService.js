@@ -8,28 +8,36 @@ const PAYSTACK_BASE_URL = "https://api.paystack.co";
 
 // ================= BVN VERIFICATION =================
 
+// services/dvaService.js - Updated verifyBVN
+
 // Verify BVN with Paystack
 export const verifyBVN = async (bvn, user) => {
 	try {
 		console.log(`Verifying BVN for user: ${user._id}`);
 
+		// Check if there's already a pending validation
+		if (user.kyc?.paystackValidationPending) {
+			console.log("Validation already pending, skipping duplicate request");
+			return {
+				success: true,
+				pending: true,
+				message:
+					"BVN verification already in progress. Please wait for confirmation.",
+			};
+		}
+
 		// For test mode, use test credentials
 		if (process.env.NODE_ENV !== "production") {
 			console.log("Using test mode for BVN verification");
 
-			// Test BVNs that Paystack accepts
 			const testBVNs = ["222222222221", "12345678901", "200123456677"];
 
 			if (testBVNs.includes(bvn)) {
+				// Simulate async validation
 				return {
 					success: true,
-					data: {
-						bvn: bvn,
-						first_name: user.fullName?.split(" ")[0] || "Test",
-						last_name: user.fullName?.split(" ")[1] || "User",
-						verified: true,
-					},
-					message: "BVN verified successfully (test mode)",
+					pending: true,
+					message: "BVN verification initiated. Please wait for confirmation.",
 				};
 			} else {
 				return {
@@ -41,8 +49,6 @@ export const verifyBVN = async (bvn, user) => {
 		}
 
 		// Production: Use Paystack's BVN verification endpoint
-		// Note: Paystack uses the customer identification endpoint for BVN verification
-		// First, we need to create a customer before verifying BVN
 		let customerCode;
 
 		// Try to find existing customer
@@ -86,8 +92,22 @@ export const verifyBVN = async (bvn, user) => {
 			}
 		}
 
-		// Validate the customer with BVN
-		// Note: This requires a bank account connected to the BVN
+		// Check if validation is already pending by calling the status endpoint
+		try {
+			// You might want to add an endpoint to check validation status
+			// For now, we'll check if the user already has pending status
+			if (user.kyc?.paystackValidationPending) {
+				return {
+					success: true,
+					pending: true,
+					message: "Validation already in progress. Please wait.",
+				};
+			}
+		} catch (error) {
+			console.log("Could not check validation status");
+		}
+
+		// Initiate validation
 		const validationResponse = await axios.post(
 			`${PAYSTACK_BASE_URL}/customer/${customerCode}/identification`,
 			{
@@ -108,10 +128,16 @@ export const verifyBVN = async (bvn, user) => {
 		);
 
 		if (validationResponse.data.status) {
+			// Mark that validation is pending
+			user.kyc.paystackValidationPending = true;
+			user.kyc.bvn = bvn;
+			user.kyc.bvnVerified = false; // Not yet verified
+			await user.save();
+
 			return {
 				success: true,
-				data: validationResponse.data.data,
-				message: "BVN verification initiated. Customer validation pending.",
+				pending: true,
+				message: "BVN verification initiated. Please wait for confirmation.",
 			};
 		} else {
 			return {
@@ -124,13 +150,27 @@ export const verifyBVN = async (bvn, user) => {
 			"BVN verification error:",
 			error.response?.data || error.message,
 		);
+
+		// Handle "Pending request already exists" error
+		if (error.response?.data?.message === "Pending request already exists") {
+			// Mark that validation is pending
+			user.kyc.paystackValidationPending = true;
+			await user.save();
+
+			return {
+				success: true,
+				pending: true,
+				message:
+					"BVN verification already in progress. Please wait for confirmation.",
+			};
+		}
+
 		return {
 			success: false,
 			message: error.response?.data?.message || "BVN verification failed",
 		};
 	}
 };
-
 // ================= KYC CHECK =================
 
 // Check if user has completed KYC
