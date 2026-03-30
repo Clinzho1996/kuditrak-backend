@@ -470,14 +470,42 @@ export const withdrawToBank = async (req, res) => {
 	const { amount, bankAccountId } = req.body;
 	const AMOUNT = Number(amount);
 
-	const calculateWithdrawalFee = (amt) => {
-		if (amt <= 50000) return 100;
-		if (amt <= 500000) return 500;
-		if (amt <= 1000000) return 1000;
-		return Math.ceil(amt * 0.01);
+	// Calculate Paystack's actual transfer cost
+	const calculatePaystackTransferCost = (amt) => {
+		// Paystack transfer fees (as of 2026)
+		// Transfer fee: ₦10 for ≤₦5,000, ₦25 for ≤₦50,000, ₦50 for >₦50,000
+		// Stamp duty: ₦50 for transfers ≥₦10,000
+
+		let transferFee = 0;
+		if (amt <= 5000) {
+			transferFee = 10;
+		} else if (amt <= 50000) {
+			transferFee = 25;
+		} else {
+			transferFee = 50;
+		}
+
+		const stampDuty = amt >= 10000 ? 50 : 0;
+
+		return transferFee + stampDuty;
 	};
 
-	const WITHDRAWAL_FEE = calculateWithdrawalFee(AMOUNT);
+	// Calculate your app's service fee (your profit)
+	const calculateServiceFee = (amt) => {
+		// Keep fees reasonable while still profitable
+		// Small transactions: ₦50 flat fee
+		// Medium transactions: ₦100 flat fee
+		// Large transactions: 0.2% capped at ₦500
+		if (amt <= 10000) return 50;
+		if (amt <= 100000) return 100;
+		if (amt <= 500000) return 200;
+		if (amt <= 1000000) return 300;
+		return Math.min(Math.ceil(amt * 0.002), 500); // 0.2% capped at ₦500
+	};
+
+	const PAYSTACK_COST = calculatePaystackTransferCost(AMOUNT);
+	const SERVICE_FEE = calculateServiceFee(AMOUNT);
+	const TOTAL_FEE = PAYSTACK_COST + SERVICE_FEE;
 
 	const session = await mongoose.startSession();
 	session.startTransaction();
@@ -488,11 +516,11 @@ export const withdrawToBank = async (req, res) => {
 		);
 		if (!wallet) throw new Error("Wallet not found");
 
-		const totalDeduction = AMOUNT + WITHDRAWAL_FEE;
+		const totalDeduction = AMOUNT + TOTAL_FEE;
 
 		if (wallet.available < totalDeduction) {
 			throw new Error(
-				`Insufficient balance. You need ₦${totalDeduction} to receive ₦${AMOUNT} (includes ₦${WITHDRAWAL_FEE} fee)`,
+				`Insufficient balance. You need ₦${totalDeduction} to receive ₦${AMOUNT} (includes ₦${TOTAL_FEE} fee - ₦${PAYSTACK_COST} Paystack cost + ₦${SERVICE_FEE} service fee)`,
 			);
 		}
 
@@ -529,10 +557,12 @@ export const withdrawToBank = async (req, res) => {
 
 		if (!payoutResult.success) throw new Error(payoutResult.message);
 
+		// Deduct total from wallet
 		wallet.balance -= totalDeduction;
 		wallet.available -= totalDeduction;
 		await wallet.save({ session });
 
+		// Create transaction record
 		await Transaction.create(
 			[
 				{
@@ -549,7 +579,9 @@ export const withdrawToBank = async (req, res) => {
 						bankName: bankAccount.bankName,
 						accountNumber: bankAccount.accountNumber,
 						reference: payoutReference,
-						fee: WITHDRAWAL_FEE,
+						totalFee: TOTAL_FEE,
+						paystackCost: PAYSTACK_COST,
+						serviceFee: SERVICE_FEE,
 						totalDeduction,
 						amountSent: AMOUNT,
 					},
@@ -563,9 +595,11 @@ export const withdrawToBank = async (req, res) => {
 
 		res.status(200).json({
 			success: true,
-			message: `Withdrawal of ₦${AMOUNT} processed. ₦${WITHDRAWAL_FEE} fee applied.`,
+			message: `Withdrawal of ₦${AMOUNT} processed. Total fee: ₦${TOTAL_FEE} (₦${PAYSTACK_COST} Paystack + ₦${SERVICE_FEE} service fee)`,
 			amount: AMOUNT,
-			fee: WITHDRAWAL_FEE,
+			fee: TOTAL_FEE,
+			paystackCost: PAYSTACK_COST,
+			serviceFee: SERVICE_FEE,
 			amountSent: AMOUNT,
 			totalDeduction,
 			balance: wallet.balance,
