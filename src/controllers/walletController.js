@@ -3,9 +3,14 @@ import axios from "axios";
 import mongoose from "mongoose";
 import BankConnection from "../models/BankConnection.js";
 import Transaction from "../models/Transaction.js";
+import User from "../models/User.js";
 import userVirtualAccount from "../models/userVirtualAccount.js";
 import Wallet from "../models/Wallet.js";
-import { createVirtualAccount, getOrCreateVirtualAccount, getUserVirtualAccount } from "../services/dvaService.js";
+import {
+	createVirtualAccount,
+	getOrCreateVirtualAccount,
+	getUserVirtualAccount,
+} from "../services/dvaService.js";
 import { sendTopUpNotification } from "../services/notificationService.js";
 import {
 	createTopUp,
