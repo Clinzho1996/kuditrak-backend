@@ -23,11 +23,6 @@ const calculateTopUpCharges = (amount) => {
 	};
 };
 
-// Calculate withdrawal fee
-const calculateWithdrawalFee = (amount) => {
-	// Flat fee of ₦50
-	return CHARGES_CONFIG.WITHDRAWAL_FEE;
-};
 
 export const createTopUp = async ({ email, amount, reference, userId }) => {
 	try {
