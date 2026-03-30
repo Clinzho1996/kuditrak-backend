@@ -5,7 +5,7 @@ import BankConnection from "../models/BankConnection.js";
 import Transaction from "../models/Transaction.js";
 import userVirtualAccount from "../models/userVirtualAccount.js";
 import Wallet from "../models/Wallet.js";
-import { getOrCreateVirtualAccount } from "../services/dvaService.js";
+import { createVirtualAccount, getOrCreateVirtualAccount, getUserVirtualAccount } from "../services/dvaService.js";
 import { sendTopUpNotification } from "../services/notificationService.js";
 import {
 	createTopUp,
@@ -580,5 +580,62 @@ export const withdrawToBank = async (req, res) => {
 			message: err.message,
 			error: err.message,
 		});
+	}
+};
+
+// controllers/walletController.js - Add this endpoint
+
+export const checkVirtualAccountStatus = async (req, res) => {
+	try {
+		const user = req.user;
+
+		// Check if user has pending validation
+		if (user.kyc?.paystackValidationPending) {
+			return res.json({
+				success: false,
+				pendingValidation: true,
+				message: "KYC validation in progress. Please wait...",
+			});
+		}
+
+		// Check if user is validated
+		if (user.kyc?.paystackValidated) {
+			// Try to get or create virtual account
+			const virtualAccount = await getUserVirtualAccount(user._id);
+
+			if (virtualAccount) {
+				return res.json({
+					success: true,
+					available: true,
+					accountNumber: virtualAccount.accountNumber,
+					bankName: virtualAccount.bankName,
+					accountName: virtualAccount.accountName,
+					provider: virtualAccount.provider,
+				});
+			} else {
+				// Create virtual account if validated but not created yet
+				const result = await createVirtualAccount(user);
+				if (result.success) {
+					return res.json({
+						success: true,
+						available: true,
+						accountNumber: result.accountNumber,
+						bankName: result.bankName,
+						accountName: result.accountName,
+						provider: result.provider,
+					});
+				}
+			}
+		}
+
+		// Default response
+		res.json({
+			success: false,
+			available: false,
+			message: "Virtual account not available yet. Please try again later.",
+		});
+	} catch (err) {
+		console.error("Check virtual account status error:", err);
+		res.status(500).json({ error: err.message });
 	}
 };

@@ -1,6 +1,7 @@
 import express from "express";
 import {
 	allocateSavings,
+	checkVirtualAccountStatus,
 	getBalance,
 	getVirtualAccount,
 	handleDvaWebhook,
@@ -19,6 +20,7 @@ router.post("/transfer", protect, transferFunds);
 router.post("/allocate", protect, allocateSavings);
 router.get("/balance", protect, getBalance);
 router.post("/withdraw", protect, withdrawToBank);
+router.get("/virtual-account/status", protect, checkVirtualAccountStatus);
 
 // DVA endpoints
 router.get("/virtual-account", protect, getVirtualAccount);

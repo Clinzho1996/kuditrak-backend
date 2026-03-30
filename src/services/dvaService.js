@@ -506,12 +506,20 @@ export const hasActiveVirtualAccount = async (userId) => {
 // ================= WEBHOOK HANDLER =================
 
 // Webhook handler for customer identification events
+// services/dvaService.js - Updated webhook handler
+
+// Webhook handler for customer identification events
 export const handleCustomerIdentificationWebhook = async (event, data) => {
 	try {
-		if (event === "customeridentification.success") {
-			const { customer_code } = data;
+		console.log(`📨 Processing webhook: ${event}`);
 
-			// Find user by customer_code
+		if (event === "customeridentification.success") {
+			const { customer_code, identification } = data;
+
+			console.log(`✅ Customer validation success for: ${customer_code}`);
+			console.log(`Identification data:`, identification);
+
+			// Find virtual account by customer_code
 			const virtualAccount = await userVirtualAccount.findOne({
 				customerCode: customer_code,
 			});
@@ -519,17 +527,100 @@ export const handleCustomerIdentificationWebhook = async (event, data) => {
 			if (virtualAccount) {
 				const user = await User.findById(virtualAccount.userId);
 				if (user) {
+					// Update user's KYC status
 					user.kyc.paystackValidated = true;
 					user.kyc.paystackValidationPending = false;
 					user.kyc.isVerified = true;
 					user.kyc.verifiedAt = new Date();
+
+					// Optionally update name from Paystack if needed
+					if (identification?.first_name && identification?.last_name) {
+						const fullName = `${identification.first_name} ${identification.last_name}`;
+						if (!user.fullName || user.fullName !== fullName) {
+							user.fullName = fullName;
+						}
+					}
+
 					await user.save();
 
-					console.log(`✅ Customer ${customer_code} validated successfully`);
+					console.log(
+						`✅ Customer ${customer_code} validated successfully for user ${user._id}`,
+					);
+
+					// Now create the virtual account after validation
+					try {
+						// Get available banks
+						const banksResponse = await axios.get(
+							`${PAYSTACK_BASE_URL}/dedicated_account/available_providers`,
+							{
+								headers: {
+									Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
+								},
+							},
+						);
+
+						const availableBanks = banksResponse.data.data || [];
+						let preferredBank = "wema-bank";
+
+						if (availableBanks.length > 0) {
+							preferredBank = availableBanks[0].provider_slug;
+						}
+
+						// Create dedicated virtual account
+						const dvaResponse = await axios.post(
+							`${PAYSTACK_BASE_URL}/dedicated_account`,
+							{
+								customer: customer_code,
+								preferred_bank: preferredBank,
+							},
+							{
+								headers: {
+									Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
+									"Content-Type": "application/json",
+								},
+								timeout: 15000,
+							},
+						);
+
+						if (dvaResponse.data.status) {
+							const data = dvaResponse.data.data;
+
+							// Update existing virtual account record
+							virtualAccount.accountNumber = data.account_number;
+							virtualAccount.bankName = data.bank.name;
+							virtualAccount.accountName = data.account_name;
+							virtualAccount.provider = data.bank.slug;
+							virtualAccount.isActive = true;
+							await virtualAccount.save();
+
+							console.log(
+								`✅ Virtual account created after validation: ${data.account_number}`,
+							);
+						}
+					} catch (dvaError) {
+						console.error(
+							"Failed to create virtual account after validation:",
+							dvaError,
+						);
+					}
+				}
+			} else {
+				// No virtual account found, but still mark user as validated
+				const user = await User.findOne({
+					"kyc.bvnVerificationData.customer_code": customer_code,
+				});
+				if (user) {
+					user.kyc.paystackValidated = true;
+					user.kyc.paystackValidationPending = false;
+					await user.save();
+					console.log(`✅ User ${user._id} marked as validated`);
 				}
 			}
 		} else if (event === "customeridentification.failed") {
 			const { customer_code, reason } = data;
+
+			console.log(`❌ Customer validation failed for: ${customer_code}`);
+			console.log(`Reason: ${reason}`);
 
 			const virtualAccount = await userVirtualAccount.findOne({
 				customerCode: customer_code,
@@ -540,11 +631,10 @@ export const handleCustomerIdentificationWebhook = async (event, data) => {
 				if (user) {
 					user.kyc.paystackValidationPending = false;
 					user.kyc.validationError = reason;
+					user.kyc.isVerified = false;
 					await user.save();
 
-					console.log(
-						`❌ Customer ${customer_code} validation failed: ${reason}`,
-					);
+					console.log(`❌ User ${user._id} validation failed: ${reason}`);
 				}
 			}
 		}

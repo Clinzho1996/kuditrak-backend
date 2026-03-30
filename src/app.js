@@ -58,7 +58,7 @@ app.use("/api/account", bankRoutes);
 app.use("/api/mono", monoRoutes);
 app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/admin", adminRoutes);
-app.use("/api/webhook", webhookRoutes);
+app.use("/api/webhooks", webhookRoutes);
 
 // Error handler
 app.use(errorMiddleware);
