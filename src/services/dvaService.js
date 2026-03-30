@@ -241,7 +241,8 @@ export const validateCustomer = async (customerCode, user) => {
 
 // ================= VIRTUAL ACCOUNT CREATION =================
 
-// Create a dedicated virtual account for a user
+// services/dvaService.js - Update createVirtualAccount to handle pending validation
+
 export const createVirtualAccount = async (user) => {
 	try {
 		// Check if user has completed KYC
@@ -259,7 +260,6 @@ export const createVirtualAccount = async (user) => {
 		// Step 1: Get or create customer in Paystack
 		let customerCode;
 
-		// First, try to find existing customer
 		try {
 			const searchResponse = await axios.get(`${PAYSTACK_BASE_URL}/customer`, {
 				params: { email: user.email },
@@ -307,24 +307,81 @@ export const createVirtualAccount = async (user) => {
 			}
 		}
 
-		// Step 2: Validate the customer (if not already validated)
+		// Step 2: Check if customer is already validated
 		const userRecord = await User.findById(user._id);
-		if (!userRecord.kyc?.paystackValidated) {
-			const validationResult = await validateCustomer(customerCode, user);
 
-			if (!validationResult.success) {
-				return {
-					success: false,
-					requiresKYC: true,
-					error: validationResult.message,
-				};
+		// If already validated, proceed to create virtual account
+		if (userRecord.kyc?.paystackValidated) {
+			console.log(
+				"Customer already validated, proceeding to create virtual account",
+			);
+
+			// Step 3: Get available banks
+			const banksResponse = await axios.get(
+				`${PAYSTACK_BASE_URL}/dedicated_account/available_providers`,
+				{
+					headers: {
+						Authorization: `Bearer ${PAYSTACK_SECRET}`,
+					},
+				},
+			);
+
+			const availableBanks = banksResponse.data.data || [];
+			let preferredBank = "wema-bank";
+
+			if (availableBanks.length > 0) {
+				preferredBank = availableBanks[0].provider_slug;
 			}
 
-			// Mark that validation is pending
-			userRecord.kyc.paystackValidated = false;
-			userRecord.kyc.paystackValidationPending = true;
-			await userRecord.save();
+			console.log(`Using bank: ${preferredBank}`);
 
+			// Step 4: Create dedicated virtual account
+			const dvaResponse = await axios.post(
+				`${PAYSTACK_BASE_URL}/dedicated_account`,
+				{
+					customer: customerCode,
+					preferred_bank: preferredBank,
+				},
+				{
+					headers: {
+						Authorization: `Bearer ${PAYSTACK_SECRET}`,
+						"Content-Type": "application/json",
+					},
+					timeout: 15000,
+				},
+			);
+
+			if (dvaResponse.data.status) {
+				const data = dvaResponse.data.data;
+
+				const virtualAccount = await userVirtualAccount.create({
+					userId: user._id,
+					accountNumber: data.account_number,
+					bankName: data.bank.name,
+					accountName: data.account_name,
+					provider: data.bank.slug,
+					customerCode: customerCode,
+					isActive: true,
+				});
+
+				console.log(
+					`✅ Virtual account created: ${data.account_number} for user ${user._id}`,
+				);
+
+				return {
+					success: true,
+					accountNumber: data.account_number,
+					bankName: data.bank.name,
+					accountName: data.account_name,
+					provider: data.bank.slug,
+					virtualAccount,
+				};
+			}
+		}
+
+		// If validation is pending, don't retry validation - just return pending status
+		if (userRecord.kyc?.paystackValidationPending) {
+			console.log("Customer validation pending, waiting for webhook");
 			return {
 				success: false,
 				pendingValidation: true,
@@ -333,69 +390,29 @@ export const createVirtualAccount = async (user) => {
 			};
 		}
 
-		// Step 3: Get available banks
-		const banksResponse = await axios.get(
-			`${PAYSTACK_BASE_URL}/dedicated_account/available_providers`,
-			{
-				headers: {
-					Authorization: `Bearer ${PAYSTACK_SECRET}`,
-				},
-			},
-		);
+		// If not validated and not pending, initiate validation
+		console.log("Customer not validated, initiating validation...");
+		const validationResult = await validateCustomer(customerCode, user);
 
-		const availableBanks = banksResponse.data.data || [];
-		let preferredBank = "wema-bank";
-
-		if (availableBanks.length > 0) {
-			preferredBank = availableBanks[0].provider_slug;
-		}
-
-		console.log(`Using bank: ${preferredBank}`);
-
-		// Step 4: Create dedicated virtual account
-		const dvaResponse = await axios.post(
-			`${PAYSTACK_BASE_URL}/dedicated_account`,
-			{
-				customer: customerCode,
-				preferred_bank: preferredBank,
-			},
-			{
-				headers: {
-					Authorization: `Bearer ${PAYSTACK_SECRET}`,
-					"Content-Type": "application/json",
-				},
-				timeout: 15000,
-			},
-		);
-
-		if (dvaResponse.data.status) {
-			const data = dvaResponse.data.data;
-
-			const virtualAccount = await userVirtualAccount.create({
-				userId: user._id,
-				accountNumber: data.account_number,
-				bankName: data.bank.name,
-				accountName: data.account_name,
-				provider: data.bank.slug,
-				customerCode: customerCode,
-				isActive: true,
-			});
-
-			console.log(
-				`✅ Virtual account created: ${data.account_number} for user ${user._id}`,
-			);
-
+		if (!validationResult.success) {
 			return {
-				success: true,
-				accountNumber: data.account_number,
-				bankName: data.bank.name,
-				accountName: data.account_name,
-				provider: data.bank.slug,
-				virtualAccount,
+				success: false,
+				requiresKYC: true,
+				error: validationResult.message,
 			};
 		}
 
-		throw new Error("Failed to create virtual account");
+		// Mark that validation is pending
+		userRecord.kyc.paystackValidated = false;
+		userRecord.kyc.paystackValidationPending = true;
+		await userRecord.save();
+
+		return {
+			success: false,
+			pendingValidation: true,
+			message:
+				"Customer validation initiated. Please wait for verification (this may take a few minutes).",
+		};
 	} catch (error) {
 		console.error(
 			"Create virtual account error:",

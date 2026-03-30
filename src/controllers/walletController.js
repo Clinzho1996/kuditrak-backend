@@ -15,17 +15,20 @@ import {
 
 // ================= DVA (Dedicated Virtual Account) Methods =================
 // controllers/walletController.js - Updated getVirtualAccount
+
 export const getVirtualAccount = async (req, res) => {
 	try {
-		// First check if user has completed KYC
+		// First, check if user has completed KYC
 		const user = req.user;
+
+		// Fetch fresh user data to get KYC status
+		const freshUser = await User.findById(user._id);
+
 		const hasKYC =
-			user.kyc?.isVerified &&
-			user.kyc?.bvn &&
-			user.kyc?.dateOfBirth &&
-			user.kyc?.address?.street &&
-			user.kyc?.identification?.type &&
-			user.kyc?.identification?.number;
+			freshUser.kyc?.isVerified &&
+			freshUser.kyc?.bvnVerified &&
+			freshUser.kyc?.address?.street &&
+			freshUser.kyc?.identification?.type;
 
 		if (!hasKYC) {
 			return res.json({
@@ -37,10 +40,36 @@ export const getVirtualAccount = async (req, res) => {
 			});
 		}
 
-		const result = await getOrCreateVirtualAccount(user);
+		// Check if KYC was just verified but virtual account not created yet
+		const existingVirtualAccount = await getUserVirtualAccount(user._id);
+
+		if (existingVirtualAccount) {
+			return res.json({
+				success: true,
+				available: true,
+				accountNumber: existingVirtualAccount.accountNumber,
+				bankName: existingVirtualAccount.bankName,
+				accountName: existingVirtualAccount.accountName,
+				provider: existingVirtualAccount.provider,
+			});
+		}
+
+		// Check if there's a pending validation
+		if (freshUser.kyc?.paystackValidationPending) {
+			return res.json({
+				success: false,
+				pendingValidation: true,
+				message:
+					"Your KYC is being verified. This may take a few minutes. Please check back later.",
+				fallbackToCard: true,
+			});
+		}
+
+		// Attempt to create virtual account
+		const result = await getOrCreateVirtualAccount(freshUser);
 
 		if (result && result.success) {
-			res.json({
+			return res.json({
 				success: true,
 				available: true,
 				accountNumber: result.accountNumber,
@@ -48,11 +77,19 @@ export const getVirtualAccount = async (req, res) => {
 				accountName: result.accountName,
 				provider: result.provider,
 			});
+		} else if (result && result.pendingValidation) {
+			return res.json({
+				success: false,
+				pendingValidation: true,
+				message:
+					result.message ||
+					"Customer validation pending. Please wait for verification.",
+				fallbackToCard: true,
+			});
 		} else {
-			res.json({
+			return res.json({
 				success: false,
 				available: false,
-				requiresKYC: result?.requiresKYC || false,
 				message:
 					result?.error ||
 					"Bank transfer not available. Please use card payment.",
