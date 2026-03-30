@@ -8,72 +8,51 @@ const PAYSTACK_BASE_URL = "https://api.paystack.co";
 
 // services/dvaService.js - Updated verifyBVN with direct verification
 
-// Verify BVN with Paystack (Synchronous)
+// services/dvaService.js - Enhanced error logging
+
 export const verifyBVN = async (bvn, user) => {
 	try {
-		console.log(`Verifying BVN for user: ${user._id}`);
+		console.log(`🔵 Verifying BVN for user: ${user._id}`);
+		console.log(`📝 BVN: ${bvn}`);
+		console.log(`👤 User name: ${user.fullName}`);
+		console.log(`📞 Phone: ${user.phoneNumber}`);
 
-		// For test mode, use test credentials that work immediately
-		if (process.env.NODE_ENV !== "production") {
-			console.log("Using test mode for BVN verification");
+		// Prepare the request payload
+		const payload = {
+			bvn: bvn,
+			first_name: user.fullName?.split(" ")[0] || "",
+			last_name: user.fullName?.split(" ")[1] || "",
+			date_of_birth: user.kyc?.dateOfBirth?.toISOString().split("T")[0] || "",
+			phone: user.phoneNumber || "",
+		};
 
-			// Paystack test BVNs that work
-			const testBVNs = ["222222222221", "12345678901", "200123456677"];
-
-			if (testBVNs.includes(bvn)) {
-				// Simulate successful verification immediately
-				return {
-					success: true,
-					verified: true,
-					data: {
-						bvn: bvn,
-						first_name: user.fullName?.split(" ")[0] || "Test",
-						last_name: user.fullName?.split(" ")[1] || "User",
-						phone: user.phoneNumber || "08000000000",
-					},
-					message: "BVN verified successfully",
-				};
-			} else {
-				return {
-					success: false,
-					verified: false,
-					message:
-						"Invalid test BVN. Use one of: 222222222221, 12345678901, 200123456677",
-				};
-			}
-		}
-
-		// Production: Use Paystack's BVN verification endpoint
-		// Note: You need to have the "BVN Verification" add-on enabled in your Paystack dashboard
+		console.log(
+			`📤 Paystack request payload:`,
+			JSON.stringify(payload, null, 2),
+		);
 
 		const response = await axios.post(
 			`${PAYSTACK_BASE_URL}/bank/verify_bvn`,
-			{
-				bvn: bvn,
-				first_name: user.fullName?.split(" ")[0] || "",
-				last_name: user.fullName?.split(" ")[1] || "",
-				date_of_birth: user.kyc?.dateOfBirth?.toISOString().split("T")[0] || "",
-				phone: user.phoneNumber || "",
-			},
+			payload,
 			{
 				headers: {
 					Authorization: `Bearer ${PAYSTACK_SECRET}`,
 					"Content-Type": "application/json",
 				},
-				timeout: 10000,
+				timeout: 15000,
 			},
+		);
+
+		console.log(
+			`📥 Paystack response:`,
+			JSON.stringify(response.data, null, 2),
 		);
 
 		if (response.data.status) {
 			const data = response.data.data;
-
-			// Update user's name if needed
-			if (data.first_name && data.last_name) {
-				const fullName = `${data.first_name} ${data.last_name}`;
-				if (fullName !== user.fullName) {
-					user.fullName = fullName;
-				}
-			}
+			console.log(
+				`✅ BVN verified successfully for ${data.first_name} ${data.last_name}`,
+			);
 
 			return {
 				success: true,
@@ -82,6 +61,7 @@ export const verifyBVN = async (bvn, user) => {
 				message: "BVN verified successfully",
 			};
 		} else {
+			console.log(`❌ BVN verification failed: ${response.data.message}`);
 			return {
 				success: false,
 				verified: false,
@@ -89,29 +69,24 @@ export const verifyBVN = async (bvn, user) => {
 			};
 		}
 	} catch (error) {
-		console.error(
-			"BVN verification error:",
-			error.response?.data || error.message,
-		);
+		console.error("❌ BVN verification error:");
+		console.error("Status:", error.response?.status);
+		console.error("Data:", JSON.stringify(error.response?.data, null, 2));
+		console.error("Message:", error.message);
 
-		// Handle specific error messages
-		if (error.response?.data?.message === "Pending request already exists") {
-			// This means there's already a pending request - we should treat as success
-			// since the verification is in progress
+		// Check for specific error types
+		if (error.response?.data?.message) {
 			return {
-				success: true,
-				verified: true,
-				pending: false,
-				message: "BVN verification in progress",
+				success: false,
+				verified: false,
+				message: error.response.data.message,
 			};
 		}
 
 		return {
 			success: false,
 			verified: false,
-			message:
-				error.response?.data?.message ||
-				"BVN verification failed. Please check your BVN and try again.",
+			message: "BVN verification failed. Please check your BVN and try again.",
 		};
 	}
 };
