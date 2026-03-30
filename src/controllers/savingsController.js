@@ -603,7 +603,6 @@ export const creditBucket = async (req, res) => {
 	}
 };
 
-// Withdraw from bucket with penalty for locked buckets
 export const withdrawFromBucket = async (req, res) => {
 	try {
 		const { id } = req.params;
@@ -622,54 +621,51 @@ export const withdrawFromBucket = async (req, res) => {
 			return res.status(404).json({ error: "Bucket not found" });
 		}
 
-		if (bucket.currentAmount < amount) {
-			return res.status(400).json({ error: "Insufficient funds in bucket" });
-		}
-
 		let wallet = await Wallet.findOne({ userId: req.user._id });
 		if (!wallet) {
 			return res.status(404).json({ error: "Wallet not found" });
 		}
 
 		let penalty = 0;
-		let amountToWithdraw = amount;
+		let totalDeduction = amount; // Initialize with withdrawal amount
 		let penaltyMessage = "";
 
 		// Check if bucket is locked and withdrawal is being made before unlock date
-		if (bucket.isLocked && !bucket.canWithdrawEarly) {
-			// Calculate the maximum amount the user can withdraw considering penalty
-			// Formula: amount + (amount * 0.2) = total_deduction <= bucket.currentAmount
-			// So: amount * 1.2 <= bucket.currentAmount
-			// Therefore: amount <= bucket.currentAmount / 1.2
+		const isLocked =
+			bucket.lockSettings?.enabled &&
+			bucket.lockSettings?.unlockDate &&
+			new Date() < new Date(bucket.lockSettings.unlockDate);
 
-			const maxWithdrawable = Math.floor(bucket.currentAmount / 1.07);
-
-			if (amount > maxWithdrawable) {
-				return res.status(400).json({
-					error: `With this locked bucket, you can only withdraw up to ₦${maxWithdrawable} (₦${(maxWithdrawable * 0.07).toFixed(2)} penalty will be applied). You requested ₦${amount}.`,
-					maxWithdrawable,
-					penaltyRate: "7%",
-				});
-			}
-
-			const penaltyDetails = bucket.calculatePenalty(amount);
-			penalty = penaltyDetails.penalty;
-			totalDeduction = penaltyDetails.totalDeduction;
+		if (isLocked) {
+			const penaltyMultiplier = 1.07; // 7% penalty
+			const penaltyAmount = amount * (penaltyMultiplier - 1);
+			penalty = penaltyAmount;
+			totalDeduction = amount + penaltyAmount;
 			penaltyMessage = ` Early withdrawal penalty (7%): ₦${penalty.toFixed(2)} applied.`;
 
 			console.log(`Locked bucket penalty: ₦${penalty}`);
 		}
 
+		// Check if bucket has enough funds
+		if (bucket.currentAmount < totalDeduction) {
+			const maxWithdrawable = Math.floor(bucket.currentAmount / 1.07);
+			return res.status(400).json({
+				error: `Insufficient funds. With this locked bucket, you can only withdraw up to ₦${maxWithdrawable} (₦${(maxWithdrawable * 0.07).toFixed(2)} penalty will apply).`,
+			});
+		}
+
 		// Deduct total amount (withdrawal amount + penalty) from bucket
-		bucket.currentAmount -= amountToWithdraw;
+		bucket.currentAmount -= totalDeduction;
 		await bucket.save();
 
-		// Credit wallet with only the withdrawal amount (penalty goes to platform)
+		// Credit wallet with only the withdrawal amount (penalty stays in bucket/platform)
 		wallet.balance += amount;
 		await wallet.save();
 
 		// Create penalty transaction if applicable
 		if (penalty > 0) {
+			// Optional: Create a penalty record for platform revenue
+			// You can create a separate collection for platform revenue
 			await Transaction.create({
 				walletId: wallet._id,
 				userId: req.user._id,
@@ -689,7 +685,14 @@ export const withdrawFromBucket = async (req, res) => {
 			});
 		}
 
+		// Get the updated wallet
 		const updatedWallet = await Wallet.findOne({ userId: req.user._id });
+
+		console.log(
+			"Updated wallet balance after withdrawal:",
+			updatedWallet.balance,
+		);
+		console.log("Updated bucket amount:", bucket.currentAmount);
 
 		res.status(200).json({
 			success: true,
@@ -703,7 +706,8 @@ export const withdrawFromBucket = async (req, res) => {
 			},
 			withdrawAmount: amount,
 			penaltyApplied: penalty,
-			totalDeductedFromBucket: amountToWithdraw,
+			totalDeduction: totalDeduction,
+			totalReceived: amount,
 		});
 	} catch (err) {
 		console.error("Withdraw from bucket error:", err);

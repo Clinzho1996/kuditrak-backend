@@ -279,7 +279,17 @@ export const getBalance = async (req, res) => {
 
 export const withdrawToBank = async (req, res) => {
 	const { amount, bankAccountId } = req.body;
-	const WITHDRAWAL_FEE = 50;
+	const AMOUNT = Number(amount);
+
+	// Dynamic fee function
+	const calculateWithdrawalFee = (amt) => {
+		if (amt <= 50000) return 100; // ₦100 for ≤50k
+		if (amt <= 500000) return 500; // ₦500 for ≤500k
+		if (amt <= 1000000) return 1000; // ₦1k for ≤1M
+		return Math.ceil(amt * 0.01); // 1% for >1M
+	};
+
+	const WITHDRAWAL_FEE = calculateWithdrawalFee(AMOUNT);
 
 	const session = await mongoose.startSession();
 	session.startTransaction();
@@ -290,28 +300,23 @@ export const withdrawToBank = async (req, res) => {
 		);
 		if (!wallet) throw new Error("Wallet not found");
 
-		// Total to deduct from wallet = amount user wants to receive + fee
-		const totalDeduction = Number(amount) + WITHDRAWAL_FEE;
+		const totalDeduction = AMOUNT + WITHDRAWAL_FEE;
 
-		// Check if user has enough balance
-		if (Number(wallet.available) < totalDeduction) {
+		if (wallet.available < totalDeduction) {
 			throw new Error(
-				`Insufficient balance. You need ₦${totalDeduction} to receive ₦${amount} (includes ₦${WITHDRAWAL_FEE} fee)`,
+				`Insufficient balance. You need ₦${totalDeduction} to receive ₦${AMOUNT} (includes ₦${WITHDRAWAL_FEE} fee)`,
 			);
 		}
 
-		// Get bank account
 		const bankAccount = await BankConnection.findOne({
 			_id: bankAccountId,
 			userId: req.user._id,
 			status: "Active",
 		}).session(session);
 
-		if (!bankAccount) {
-			throw new Error("Bank account not found");
-		}
+		if (!bankAccount) throw new Error("Bank account not found");
 
-		// Get or create recipient code
+		// Get or create recipient
 		let recipientResult;
 		try {
 			recipientResult = await getOrCreateRecipient(bankAccount);
@@ -326,23 +331,21 @@ export const withdrawToBank = async (req, res) => {
 			);
 		}
 
-		// IMPORTANT: Send the FULL amount the user wants to receive (not minus fee)
+		// Initiate payout (full amount sent)
 		const payoutReference = `PAYOUT-${req.user._id}-${Date.now()}`;
 		const payoutResult = await initiatePayout({
-			amount: Number(amount), // Send the full amount user wants to receive
+			amount: AMOUNT,
 			userId: req.user._id,
 			bankAccountId,
 			recipientCode: recipientResult.recipientCode,
 			reference: payoutReference,
 		});
 
-		if (!payoutResult.success) {
-			throw new Error(payoutResult.message);
-		}
+		if (!payoutResult.success) throw new Error(payoutResult.message);
 
-		// Deduct total amount (withdrawal amount + fee) from wallet
-		wallet.balance = Number(wallet.balance) - totalDeduction;
-		wallet.available = Number(wallet.available) - totalDeduction;
+		// Deduct total (amount + fee) from wallet
+		wallet.balance -= totalDeduction;
+		wallet.available -= totalDeduction;
 		await wallet.save({ session });
 
 		// Record transaction
@@ -353,7 +356,7 @@ export const withdrawToBank = async (req, res) => {
 					userId: req.user._id,
 					transactionId: payoutReference,
 					type: "expense",
-					amount: Number(amount),
+					amount: AMOUNT,
 					status: "Completed",
 					description: `Withdrawal to ${bankAccount.bankName} - ${bankAccount.accountNumber}`,
 					source: "wallet",
@@ -363,8 +366,8 @@ export const withdrawToBank = async (req, res) => {
 						accountNumber: bankAccount.accountNumber,
 						reference: payoutReference,
 						fee: WITHDRAWAL_FEE,
-						totalDeduction: totalDeduction,
-						amountSent: Number(amount), // User receives full amount
+						totalDeduction,
+						amountSent: AMOUNT,
 					},
 				},
 			],
@@ -376,11 +379,11 @@ export const withdrawToBank = async (req, res) => {
 
 		res.status(200).json({
 			success: true,
-			message: `Withdrawal of ₦${amount} processed. ₦${WITHDRAWAL_FEE} fee applied.`,
-			amount: Number(amount),
+			message: `Withdrawal of ₦${AMOUNT} processed. ₦${WITHDRAWAL_FEE} fee applied.`,
+			amount: AMOUNT,
 			fee: WITHDRAWAL_FEE,
-			amountSent: Number(amount), // User receives full amount
-			totalDeduction: totalDeduction,
+			amountSent: AMOUNT,
+			totalDeduction,
 			balance: wallet.balance,
 			payoutReference: payoutResult.transferReference,
 			wallet: {
