@@ -1,8 +1,10 @@
-// routes/webhookRoutes.js
+// routes/webhookRoutes.js - Updated with charge.success handler
 import axios from "axios";
 import express from "express";
+import Transaction from "../models/Transaction.js";
 import User from "../models/User.js";
 import userVirtualAccount from "../models/userVirtualAccount.js";
+import Wallet from "../models/Wallet.js";
 import { sendPushToUser } from "../services/pushService.js";
 
 const router = express.Router();
@@ -16,7 +18,6 @@ const createVirtualAccountAfterValidation = async (customerCode, user) => {
 			`Creating virtual account for validated customer: ${customerCode}`,
 		);
 
-		// Get available banks
 		const banksResponse = await axios.get(
 			`${PAYSTACK_BASE_URL}/dedicated_account/available_providers`,
 			{
@@ -32,7 +33,6 @@ const createVirtualAccountAfterValidation = async (customerCode, user) => {
 			preferredBank = availableBanks[0].provider_slug;
 		}
 
-		// Create dedicated virtual account
 		const dvaResponse = await axios.post(
 			`${PAYSTACK_BASE_URL}/dedicated_account`,
 			{
@@ -50,7 +50,6 @@ const createVirtualAccountAfterValidation = async (customerCode, user) => {
 
 		if (dvaResponse.data.status) {
 			const data = dvaResponse.data.data;
-
 			const virtualAccount = await userVirtualAccount.create({
 				userId: user._id,
 				accountNumber: data.account_number,
@@ -60,7 +59,6 @@ const createVirtualAccountAfterValidation = async (customerCode, user) => {
 				customerCode: customerCode,
 				isActive: true,
 			});
-
 			console.log(`✅ Virtual account created: ${data.account_number}`);
 			return virtualAccount;
 		}
@@ -74,95 +72,168 @@ const createVirtualAccountAfterValidation = async (customerCode, user) => {
 	}
 };
 
-// Webhook handler
+// Handle bank transfer funding (charge.success)
+const handleBankTransferFunding = async (eventData) => {
+	try {
+		console.log("💰 Processing bank transfer funding...");
+
+		// Get the receiver's virtual account number
+		const receiverAccountNumber =
+			eventData.metadata?.receiver_account_number ||
+			eventData.authorization?.receiver_bank_account_number;
+
+		console.log("Receiver account number:", receiverAccountNumber);
+
+		if (!receiverAccountNumber) {
+			console.log("❌ No receiver account number found");
+			return;
+		}
+
+		// Find the virtual account
+		const virtualAccount = await userVirtualAccount.findOne({
+			accountNumber: receiverAccountNumber,
+			isActive: true,
+		});
+
+		if (!virtualAccount) {
+			console.log(`❌ No virtual account found for: ${receiverAccountNumber}`);
+			return;
+		}
+
+		console.log(`✅ Found virtual account for user: ${virtualAccount.userId}`);
+
+		// Get the user's wallet
+		const wallet = await Wallet.findOne({ userId: virtualAccount.userId });
+
+		if (!wallet) {
+			console.log(`❌ No wallet found for user: ${virtualAccount.userId}`);
+			return;
+		}
+
+		// Get the amount from the webhook
+		const amount = eventData.amount / 100; // Convert from kobo to naira
+		const paystackFee = eventData.fees / 100; // Convert from kobo to naira
+		const senderName = eventData.authorization?.sender_name || "Unknown";
+		const senderAccount =
+			eventData.authorization?.sender_bank_account_number || "Unknown";
+		const senderBank = eventData.authorization?.sender_bank || "Unknown";
+
+		console.log(
+			`💰 Amount: ₦${amount}, Fee: ₦${paystackFee}, Sender: ${senderName}`,
+		);
+
+		// Credit the user's wallet
+		wallet.balance += amount;
+		wallet.available += amount;
+		await wallet.save();
+
+		// Create transaction record
+		await Transaction.create({
+			userId: virtualAccount.userId,
+			walletId: wallet._id,
+			transactionId: eventData.reference,
+			type: "income",
+			amount: amount,
+			status: "Completed",
+			description: `Wallet top-up via bank transfer from ${senderName}`,
+			source: "virtual_account",
+			paystackFee: paystackFee,
+			totalCharged: amount + paystackFee,
+			paymentMethod: "bank_transfer",
+			metadata: {
+				paystackReference: eventData.reference,
+				senderName: senderName,
+				senderAccount: senderAccount,
+				senderBank: senderBank,
+				virtualAccountNumber: receiverAccountNumber,
+				paystackFee: paystackFee,
+			},
+		});
+
+		console.log(
+			`✅ Wallet credited: +₦${amount}, New balance: ₦${wallet.balance}`,
+		);
+
+		// Send push notification to user
+		try {
+			await sendPushToUser(
+				virtualAccount.userId,
+				"💰 Wallet Funded!",
+				`₦${amount.toLocaleString()} has been added to your wallet via bank transfer.`,
+				{ type: "wallet_funded", screen: "wallet", amount: amount },
+			);
+			console.log("📱 Push notification sent");
+		} catch (notifError) {
+			console.error("Failed to send notification:", notifError);
+		}
+	} catch (error) {
+		console.error("Error handling bank transfer funding:", error);
+	}
+};
+
+// Main webhook handler
 router.post("/paystack", async (req, res) => {
 	try {
 		const event = req.body;
 		console.log("📨 Paystack webhook received:", event.event);
-		console.log("Webhook data:", JSON.stringify(event.data, null, 2));
 
-		// Handle customer identification success
+		// Handle customer identification events (KYC verification)
 		if (event.event === "customeridentification.success") {
 			const { customer_code, identification } = event.data;
-
 			console.log(`✅ Customer validation successful for: ${customer_code}`);
 
-			// Find user by customer_code
 			const user = await User.findOne({
 				"kyc.paystackCustomerCode": customer_code,
 			});
 
 			if (user) {
-				console.log(`✅ User found: ${user._id} (${user.email})`);
-
-				// Update user's KYC status
 				user.kyc.paystackValidated = true;
 				user.kyc.paystackValidationPending = false;
 				user.kyc.isVerified = true;
 				user.kyc.verifiedAt = new Date();
 				user.kyc.bvnVerified = true;
-
-				// Update name from BVN if needed
-				if (identification?.first_name && identification?.last_name) {
-					const fullName = `${identification.first_name} ${identification.last_name}`;
-					if (fullName !== user.fullName) {
-						console.log(
-							`📝 Updating user name from BVN: "${user.fullName}" -> "${fullName}"`,
-						);
-						user.fullName = fullName;
-					}
-				}
-
 				await user.save();
-				console.log(`✅ User KYC updated to verified`);
 
-				// Create virtual account
-				console.log("🔵 Creating virtual account for user...");
-				const virtualAccount = await createVirtualAccountAfterValidation(
-					customer_code,
-					user,
+				console.log(`✅ User ${user._id} KYC verified`);
+
+				// Create virtual account for user
+				await createVirtualAccountAfterValidation(customer_code, user);
+
+				// Send notification
+				await sendPushToUser(
+					user._id,
+					"✅ KYC Verified!",
+					"Your KYC has been verified. You can now fund your wallet via bank transfer!",
+					{ type: "kyc_complete", screen: "topup" },
 				);
-
-				if (virtualAccount) {
-					console.log(
-						`✅ Virtual account created: ${virtualAccount.accountNumber} (${virtualAccount.bankName})`,
-					);
-				} else {
-					console.log("⚠️ Virtual account creation pending or failed");
-				}
-
-				// Send push notification to user
-				try {
-					await sendPushToUser(
-						user._id,
-						"✅ KYC Verified!",
-						"Your KYC has been verified. You can now fund your wallet via bank transfer!",
-						{ type: "kyc_complete", screen: "topup" },
-					);
-					console.log("✅ Push notification sent to user");
-				} catch (notifError) {
-					console.error("Failed to send notification:", notifError);
-				}
-			} else {
-				console.log(`❌ No user found with customer code: ${customer_code}`);
 			}
 		}
 		// Handle customer identification failure
 		else if (event.event === "customeridentification.failed") {
 			const { customer_code, reason } = event.data;
-
-			console.log(`❌ Customer validation failed for: ${customer_code}`);
-			console.log(`Reason: ${reason}`);
+			console.log(`❌ Customer validation failed: ${reason}`);
 
 			const user = await User.findOne({
 				"kyc.paystackCustomerCode": customer_code,
 			});
-
 			if (user) {
 				user.kyc.paystackValidationPending = false;
 				user.kyc.validationError = reason;
 				await user.save();
-				console.log(`❌ User ${user._id} validation marked as failed`);
+			}
+		}
+		// Handle bank transfer funding (charge.success for virtual accounts)
+		else if (event.event === "charge.success") {
+			// Check if this is a virtual account transfer
+			const isVirtualAccountTransfer =
+				event.data.channel === "dedicated_nuban" ||
+				event.data.authorization?.channel === "dedicated_nuban";
+
+			if (isVirtualAccountTransfer) {
+				console.log("💰 Processing virtual account transfer...");
+				await handleBankTransferFunding(event.data);
+			} else {
+				console.log("ℹ️ Non-virtual account charge, skipping");
 			}
 		}
 
