@@ -17,13 +17,15 @@ const userSchema = new mongoose.Schema({
 	},
 
 	// KYC Fields for DVA
+	// models/User.js - Add to kyc object
 	kyc: {
 		bvn: { type: String, default: null },
-		dateOfBirth: { type: Date, default: null },
 		bvnVerified: { type: Boolean, default: false },
+		paystackCustomerCode: { type: String, default: null }, // Add this
 		paystackValidated: { type: Boolean, default: false }, // Add this
-		paystackValidationPending: { type: Boolean, default: false },
-		bvnVerificationData: { type: mongoose.Schema.Types.Mixed, default: null },
+		paystackValidationPending: { type: Boolean, default: false }, // Add this
+		validationError: { type: String, default: null }, // Add this
+		dateOfBirth: { type: Date, default: null },
 		address: {
 			street: { type: String, default: null },
 			city: { type: String, default: null },
