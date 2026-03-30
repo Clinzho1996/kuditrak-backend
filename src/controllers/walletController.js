@@ -472,10 +472,6 @@ export const withdrawToBank = async (req, res) => {
 
 	// Calculate Paystack's actual transfer cost
 	const calculatePaystackTransferCost = (amt) => {
-		// Paystack transfer fees (as of 2026)
-		// Transfer fee: ₦10 for ≤₦5,000, ₦25 for ≤₦50,000, ₦50 for >₦50,000
-		// Stamp duty: ₦50 for transfers ≥₦10,000
-
 		let transferFee = 0;
 		if (amt <= 5000) {
 			transferFee = 10;
@@ -484,23 +480,17 @@ export const withdrawToBank = async (req, res) => {
 		} else {
 			transferFee = 50;
 		}
-
 		const stampDuty = amt >= 10000 ? 50 : 0;
-
 		return transferFee + stampDuty;
 	};
 
 	// Calculate your app's service fee (your profit)
 	const calculateServiceFee = (amt) => {
-		// Keep fees reasonable while still profitable
-		// Small transactions: ₦50 flat fee
-		// Medium transactions: ₦100 flat fee
-		// Large transactions: 0.2% capped at ₦500
 		if (amt <= 10000) return 50;
 		if (amt <= 100000) return 100;
 		if (amt <= 500000) return 200;
 		if (amt <= 1000000) return 300;
-		return Math.min(Math.ceil(amt * 0.002), 500); // 0.2% capped at ₦500
+		return Math.min(Math.ceil(amt * 0.002), 500);
 	};
 
 	const PAYSTACK_COST = calculatePaystackTransferCost(AMOUNT);
@@ -511,16 +501,32 @@ export const withdrawToBank = async (req, res) => {
 	session.startTransaction();
 
 	try {
+		// Get user's wallet
 		const wallet = await Wallet.findOne({ userId: req.user._id }).session(
 			session,
 		);
 		if (!wallet) throw new Error("Wallet not found");
 
+		// Get or create platform wallet (for your company revenue)
+		let platformWallet = await Wallet.findOne({
+			userId: process.env.SYSTEM_BUCKET_ID,
+		}).session(session);
+
+		if (!platformWallet) {
+			platformWallet = await Wallet.create({
+				userId: process.env.SYSTEM_BUCKET_ID,
+				balance: 0,
+				available: 0,
+				allocated: 0,
+				currency: "NGN",
+			});
+		}
+
 		const totalDeduction = AMOUNT + TOTAL_FEE;
 
 		if (wallet.available < totalDeduction) {
 			throw new Error(
-				`Insufficient balance. You need ₦${totalDeduction} to receive ₦${AMOUNT} (includes ₦${TOTAL_FEE} fee - ₦${PAYSTACK_COST} Paystack cost + ₦${SERVICE_FEE} service fee)`,
+				`Insufficient balance. You need ₦${totalDeduction} to receive ₦${AMOUNT} (includes ₦${TOTAL_FEE} fee)`,
 			);
 		}
 
@@ -532,6 +538,7 @@ export const withdrawToBank = async (req, res) => {
 
 		if (!bankAccount) throw new Error("Bank account not found");
 
+		// Get or create recipient
 		let recipientResult;
 		try {
 			recipientResult = await getOrCreateRecipient(bankAccount);
@@ -546,6 +553,7 @@ export const withdrawToBank = async (req, res) => {
 			);
 		}
 
+		// Initiate payout to user's bank
 		const payoutReference = `PAYOUT-${req.user._id}-${Date.now()}`;
 		const payoutResult = await initiatePayout({
 			amount: AMOUNT,
@@ -557,12 +565,21 @@ export const withdrawToBank = async (req, res) => {
 
 		if (!payoutResult.success) throw new Error(payoutResult.message);
 
-		// Deduct total from wallet
+		// DEDUCT FROM USER'S WALLET
 		wallet.balance -= totalDeduction;
 		wallet.available -= totalDeduction;
 		await wallet.save({ session });
 
-		// Create transaction record
+		// ADD SERVICE FEE TO PLATFORM WALLET (YOUR REVENUE)
+		if (SERVICE_FEE > 0) {
+			platformWallet.balance += SERVICE_FEE;
+			platformWallet.available += SERVICE_FEE;
+			await platformWallet.save({ session });
+
+			console.log(`💰 Service fee of ₦${SERVICE_FEE} added to platform wallet`);
+		}
+
+		// Record user withdrawal transaction
 		await Transaction.create(
 			[
 				{
@@ -590,12 +607,37 @@ export const withdrawToBank = async (req, res) => {
 			{ session },
 		);
 
+		// Record platform revenue transaction (optional)
+		if (SERVICE_FEE > 0) {
+			await Transaction.create(
+				[
+					{
+						walletId: platformWallet._id,
+						userId: process.env.SYSTEM_BUCKET_ID,
+						transactionId: `PLATFORM-REVENUE-${req.user._id}-${Date.now()}`,
+						type: "income",
+						amount: SERVICE_FEE,
+						status: "Completed",
+						description: `Service fee from withdrawal by user ${req.user._id}`,
+						source: "platform",
+						metadata: {
+							userId: req.user._id,
+							withdrawalAmount: AMOUNT,
+							serviceFee: SERVICE_FEE,
+							paystackCost: PAYSTACK_COST,
+						},
+					},
+				],
+				{ session },
+			);
+		}
+
 		await session.commitTransaction();
 		session.endSession();
 
 		res.status(200).json({
 			success: true,
-			message: `Withdrawal of ₦${AMOUNT} processed. Total fee: ₦${TOTAL_FEE} (₦${PAYSTACK_COST} Paystack + ₦${SERVICE_FEE} service fee)`,
+			message: `Withdrawal of ₦${AMOUNT} processed. Fee: ₦${TOTAL_FEE} (₦${PAYSTACK_COST} Paystack + ₦${SERVICE_FEE} service fee)`,
 			amount: AMOUNT,
 			fee: TOTAL_FEE,
 			paystackCost: PAYSTACK_COST,
@@ -603,6 +645,7 @@ export const withdrawToBank = async (req, res) => {
 			amountSent: AMOUNT,
 			totalDeduction,
 			balance: wallet.balance,
+			platformBalance: platformWallet.balance,
 			payoutReference: payoutResult.transferReference,
 			wallet: {
 				balance: wallet.balance,
