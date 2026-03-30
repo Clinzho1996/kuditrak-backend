@@ -2,7 +2,6 @@ import express from "express";
 
 import {
 	checkConnectionLimit,
-	debugDeviceTokens,
 	deleteAccount,
 	getDeviceTokens,
 	getInsights,
@@ -49,7 +48,6 @@ router.post("/test", protect, testPushNotification);
 router.post("/device-token", protect, registerDeviceToken);
 router.delete("/device-token", protect, unregisterDeviceToken);
 router.get("/device-tokens", protect, getDeviceTokens);
-router.get("/debug-tokens", protect, debugDeviceTokens);
 
 // ================= Limit Check Routes =================
 router.get("/check-limit", protect, checkConnectionLimit);

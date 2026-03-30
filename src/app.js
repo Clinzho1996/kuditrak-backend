@@ -18,6 +18,7 @@ import subscriptionRoutes from "./routes/subscription.js";
 import transactionRoutes from "./routes/transactions.js";
 import userRoutes from "./routes/users.js";
 import walletRoutes from "./routes/wallet.js";
+import webhookRoutes from "./routes/webhookRoutes.js";
 
 dotenv.config();
 const app = express();
@@ -57,6 +58,7 @@ app.use("/api/account", bankRoutes);
 app.use("/api/mono", monoRoutes);
 app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/webhook", webhookRoutes);
 
 // Error handler
 app.use(errorMiddleware);

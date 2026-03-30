@@ -27,11 +27,7 @@ cloudinary.config({
 export const getInsights = async (req, res) => {
 	try {
 		const insights = await generateFinancialInsights(req.user._id);
-
-		res.status(200).json({
-			success: true,
-			data: insights,
-		});
+		res.status(200).json({ success: true, data: insights });
 	} catch (err) {
 		res.status(500).json({ error: err.message });
 	}
@@ -45,13 +41,46 @@ export const getInsights = async (req, res) => {
 export const getProfile = async (req, res) => {
 	try {
 		const user = await User.findById(req.user._id).select("-password");
-
-		if (!user) {
-			return res.status(404).json({ error: "User not found" });
-		}
-
+		if (!user) return res.status(404).json({ error: "User not found" });
 		res.status(200).json(user);
 	} catch (err) {
+		res.status(500).json({ error: err.message });
+	}
+};
+
+/*
+|--------------------------------------------------------------------------
+| Update Profile
+|--------------------------------------------------------------------------
+*/
+export const updateProfile = async (req, res) => {
+	try {
+		const { fullName, email, phoneNumber } = req.body;
+		const userId = req.user._id;
+
+		const user = await User.findById(userId);
+		if (!user) return res.status(404).json({ error: "User not found" });
+
+		if (email && email !== user.email) {
+			const existingUser = await User.findOne({ email });
+			if (existingUser)
+				return res.status(400).json({ error: "Email already in use" });
+			user.email = email;
+		}
+
+		if (fullName) user.fullName = fullName;
+		if (phoneNumber) user.phoneNumber = phoneNumber;
+
+		await user.save();
+
+		const updatedUser = await User.findById(userId).select("-password");
+		res.status(200).json({
+			success: true,
+			message: "Profile updated successfully",
+			user: updatedUser,
+		});
+	} catch (err) {
+		console.error("Update profile error:", err);
 		res.status(500).json({ error: err.message });
 	}
 };
@@ -72,15 +101,13 @@ export const updateProfileImage = async (req, res) => {
 		});
 
 		const user = await User.findById(req.user._id);
-
-		if (!user) {
-			return res.status(404).json({ error: "User not found" });
-		}
+		if (!user) return res.status(404).json({ error: "User not found" });
 
 		user.profileImage = result.secure_url;
 		await user.save();
 
 		res.status(200).json({
+			success: true,
 			message: "Profile image updated",
 			profileImage: result.secure_url,
 		});
@@ -89,30 +116,28 @@ export const updateProfileImage = async (req, res) => {
 	}
 };
 
-// controllers/userContoller.js - Update your updateKYC function
-
+/*
+|--------------------------------------------------------------------------
+| KYC Management
+|--------------------------------------------------------------------------
+*/
 export const updateKYC = async (req, res) => {
 	try {
 		const userId = req.user._id;
 		const { bvn, dateOfBirth, address, identification } = req.body;
 
 		const user = await User.findById(userId);
-		if (!user) {
-			return res.status(404).json({ error: "User not found" });
-		}
+		if (!user) return res.status(404).json({ error: "User not found" });
 
-		// STEP 1: Verify BVN with Paystack
+		// Verify BVN with Paystack if provided
 		if (bvn) {
 			const bvnVerification = await verifyBVN(bvn, user);
-
 			if (!bvnVerification.success) {
 				return res.status(400).json({
 					error: "BVN verification failed",
 					message: bvnVerification.message,
 				});
 			}
-
-			// BVN is valid, save it
 			user.kyc.bvn = bvn;
 			user.kyc.bvnVerified = true;
 			user.kyc.bvnVerificationData = bvnVerification.data;
@@ -136,7 +161,7 @@ export const updateKYC = async (req, res) => {
 		// Check if all required KYC fields are complete
 		const isKYCComplete =
 			user.kyc.bvn &&
-			user.kyc.bvnVerified && // BVN must be verified
+			user.kyc.bvnVerified &&
 			user.kyc.dateOfBirth &&
 			user.kyc.address?.street &&
 			user.kyc.address?.city &&
@@ -148,7 +173,6 @@ export const updateKYC = async (req, res) => {
 			user.kyc.isVerified = true;
 			user.kyc.verifiedAt = new Date();
 
-			// Send notification that KYC is complete
 			try {
 				await sendPushToUser(
 					userId,
@@ -187,34 +211,38 @@ export const updateKYC = async (req, res) => {
 		res.status(500).json({ error: err.message });
 	}
 };
-// Get KYC status
+
 export const getKYCStatus = async (req, res) => {
 	try {
 		const userId = req.user._id;
 		const user = await User.findById(userId);
-
-		if (!user) {
-			return res.status(404).json({ error: "User not found" });
-		}
+		if (!user) return res.status(404).json({ error: "User not found" });
 
 		const isKYCComplete =
-			user.kyc.bvn &&
-			user.kyc.dateOfBirth &&
-			user.kyc.address?.street &&
-			user.kyc.address?.city &&
-			user.kyc.address?.state &&
-			user.kyc.identification?.type &&
-			user.kyc.identification?.number;
+			user.kyc?.bvn &&
+			user.kyc?.dateOfBirth &&
+			user.kyc?.address?.street &&
+			user.kyc?.address?.city &&
+			user.kyc?.address?.state &&
+			user.kyc?.identification?.type &&
+			user.kyc?.identification?.number;
 
 		res.status(200).json({
 			success: true,
 			kyc: {
-				isVerified: user.kyc.isVerified,
-				isComplete: isKYCComplete,
-				hasBvn: !!user.kyc.bvn,
-				hasDateOfBirth: !!user.kyc.dateOfBirth,
-				hasAddress: !!user.kyc.address?.street,
-				hasIdentification: !!user.kyc.identification?.type,
+				isVerified: user.kyc?.isVerified || false,
+				isComplete: isKYCComplete || false,
+				hasBvn: !!user.kyc?.bvn,
+				hasDateOfBirth: !!user.kyc?.dateOfBirth,
+				hasAddress: !!(
+					user.kyc?.address?.street &&
+					user.kyc?.address?.city &&
+					user.kyc?.address?.state
+				),
+				hasIdentification: !!(
+					user.kyc?.identification?.type && user.kyc?.identification?.number
+				),
+				verifiedAt: user.kyc?.verifiedAt || null,
 			},
 		});
 	} catch (err) {
@@ -223,113 +251,15 @@ export const getKYCStatus = async (req, res) => {
 	}
 };
 
-export const updateProfile = async (req, res) => {
-	try {
-		const { fullName, email, phoneNumber } = req.body;
-		const userId = req.user._id;
-
-		// Find user
-		const user = await User.findById(userId);
-		if (!user) {
-			return res.status(404).json({ error: "User not found" });
-		}
-
-		// Check if email is being changed and if it's already taken
-		if (email && email !== user.email) {
-			const existingUser = await User.findOne({ email });
-			if (existingUser) {
-				return res.status(400).json({ error: "Email already in use" });
-			}
-			user.email = email;
-		}
-
-		// Update fields
-		if (fullName) user.fullName = fullName;
-		if (phoneNumber) user.phoneNumber = phoneNumber;
-
-		// Save updated user
-		await user.save();
-
-		// Return updated user without password
-		const updatedUser = await User.findById(userId).select("-password");
-
-		res.status(200).json({
-			success: true,
-			message: "Profile updated successfully",
-			user: updatedUser,
-		});
-	} catch (err) {
-		console.error("Update profile error:", err);
-		res.status(500).json({ error: err.message });
-	}
-};
 /*
 |--------------------------------------------------------------------------
-| Delete Account
+| Device Token Management
 |--------------------------------------------------------------------------
 */
-export const deleteAccount = async (req, res) => {
-	try {
-		const { reason } = req.body;
-
-		const user = await User.findById(req.user._id);
-
-		if (!user) {
-			return res.status(404).json({ error: "User not found" });
-		}
-
-		user.deletedReason = reason;
-		await user.save();
-
-		await User.findByIdAndDelete(req.user._id);
-
-		res.status(200).json({
-			message: "Account deleted successfully",
-			reason,
-		});
-	} catch (err) {
-		res.status(500).json({ error: err.message });
-	}
-};
-
-// backend/controllers/accountController.js
-export const checkConnectionLimit = async (req, res) => {
-	try {
-		const userId = req.user._id;
-		const user = await User.findById(userId);
-		const plan = user.subscription?.plan || "free";
-
-		const limits = {
-			free: 0,
-			basic: 3,
-			pro: Infinity,
-		};
-
-		const bankCount = await BankConnection.countDocuments({
-			userId,
-			status: "Active",
-		});
-		const canConnect = bankCount < limits[plan];
-
-		res.status(200).json({
-			success: true,
-			canConnect,
-			message: canConnect
-				? "You can connect bank accounts"
-				: "Upgrade to connect bank accounts",
-			remaining: limits[plan] - bankCount,
-			plan,
-		});
-	} catch (err) {
-		res.status(500).json({ error: err.message });
-	}
-};
-
 export const registerDeviceToken = async (req, res) => {
 	try {
 		const { userId, token, deviceType } = req.body;
 
-		// Verify the authenticated user matches the userId
 		if (req.user._id.toString() !== userId) {
 			return res.status(403).json({ error: "Unauthorized" });
 		}
@@ -356,7 +286,6 @@ export const unregisterDeviceToken = async (req, res) => {
 	try {
 		const { userId, token } = req.body;
 
-		// Verify the authenticated user matches the userId
 		if (req.user._id.toString() !== userId) {
 			return res.status(403).json({ error: "Unauthorized" });
 		}
@@ -377,39 +306,19 @@ export const unregisterDeviceToken = async (req, res) => {
 	}
 };
 
-// backend/controllers/userController.js - Add this endpoint
 export const getDeviceTokens = async (req, res) => {
 	try {
 		const userId = req.user._id;
-
 		const user = await User.findById(userId)
 			.select("deviceTokens email fullName")
 			.lean();
 
-		if (!user) {
-			return res.status(404).json({ error: "User not found" });
-		}
-
-		console.log("Device tokens for user:", {
-			userId: user._id,
-			email: user.email,
-			tokens: user.deviceTokens,
-		});
+		if (!user) return res.status(404).json({ error: "User not found" });
 
 		res.json({
 			success: true,
-			user: {
-				id: user._id,
-				email: user.email,
-				fullName: user.fullName,
-			},
 			deviceTokens: user.deviceTokens || [],
 			tokenCount: user.deviceTokens?.length || 0,
-			tokens: user.deviceTokens?.map((t) => ({
-				token: t.token,
-				deviceType: t.deviceType,
-				lastUsed: t.lastUsed,
-			})),
 		});
 	} catch (error) {
 		console.error("Error getting device tokens:", error);
@@ -417,66 +326,31 @@ export const getDeviceTokens = async (req, res) => {
 	}
 };
 
-// Update your testPushNotification function
 export const testPushNotification = async (req, res) => {
 	try {
 		const userId = req.user._id;
-
-		console.log("🧪 Testing push for user:", userId);
-
-		// First, get the device tokens to debug
 		const user = await User.findById(userId).select("deviceTokens email");
-		console.log("User found:", user ? user.email : "No user");
-		console.log("Device tokens:", user?.deviceTokens);
-		console.log("Token count:", user?.deviceTokens?.length);
 
-		if (!user) {
-			return res.status(404).json({ error: "User not found" });
-		}
+		if (!user) return res.status(404).json({ error: "User not found" });
 
 		if (!user.deviceTokens || user.deviceTokens.length === 0) {
 			return res.status(400).json({
 				success: false,
 				message: "No device tokens registered for this user",
-				user: { email: user.email },
 			});
 		}
 
-		// Log each token
-		user.deviceTokens.forEach((token, index) => {
-			console.log(`Token ${index + 1}:`, {
-				token: token.token,
-				deviceType: token.deviceType,
-				// isValidExpo: require("expo-server-sdk").Expo.isExpoPushToken(
-				// 	token.token,
-				// ),
-			});
-		});
-
-		// Send a test notification
 		const result = await sendPushToUser(
 			userId,
 			"🧪 Test Notification",
 			"This is a test push notification from Kuditrak! Tap to open the app.",
-			{
-				type: "test",
-				timestamp: new Date().toISOString(),
-				screen: "home",
-			},
+			{ type: "test", timestamp: new Date().toISOString(), screen: "home" },
 		);
 
 		res.status(200).json({
 			success: true,
 			message: "Test notification sent!",
 			result,
-			debug: {
-				hasTokens: user.deviceTokens.length > 0,
-				tokenCount: user.deviceTokens.length,
-				tokens: user.deviceTokens.map((t) => ({
-					preview: t.token.substring(0, 20) + "...",
-					deviceType: t.deviceType,
-				})),
-			},
 		});
 	} catch (err) {
 		console.error("Test push error:", err);
@@ -484,58 +358,54 @@ export const testPushNotification = async (req, res) => {
 	}
 };
 
-// backend/controllers/userController.js
-export const debugDeviceTokens = async (req, res) => {
+/*
+|--------------------------------------------------------------------------
+| Account Management
+|--------------------------------------------------------------------------
+*/
+export const checkConnectionLimit = async (req, res) => {
 	try {
 		const userId = req.user._id;
-
-		// Find user with raw query to see exactly what's stored
 		const user = await User.findById(userId);
+		const plan = user.subscription?.plan || "free";
 
-		if (!user) {
-			return res.status(404).json({ error: "User not found" });
-		}
+		const limits = { free: 0, basic: 3, pro: Infinity };
 
-		console.log("=== DEBUG DEVICE TOKENS ===");
-		console.log("User ID:", userId);
-		console.log("User Email:", user.email);
-		console.log("Device Tokens Array:", user.deviceTokens);
-		console.log("Device Tokens Type:", typeof user.deviceTokens);
-		console.log("Is Array:", Array.isArray(user.deviceTokens));
-		console.log("Length:", user.deviceTokens?.length);
-
-		// Check if tokens exist but in wrong format
-		if (user.deviceTokens && user.deviceTokens.length > 0) {
-			user.deviceTokens.forEach((token, index) => {
-				console.log(`Token ${index}:`, {
-					token: token.token,
-					tokenType: typeof token.token,
-					deviceType: token.deviceType,
-					lastUsed: token.lastUsed,
-					_id: token._id,
-				});
-			});
-		} else {
-			console.log("No tokens found in user document");
-
-			// Check if tokens might be stored elsewhere
-			console.log("Full user object keys:", Object.keys(user.toObject()));
-		}
-
-		res.json({
-			success: true,
-			debug: {
-				userId: user._id,
-				email: user.email,
-				hasDeviceTokens: !!user.deviceTokens,
-				isArray: Array.isArray(user.deviceTokens),
-				tokenCount: user.deviceTokens?.length || 0,
-				tokens: user.deviceTokens || [],
-				rawTokens: JSON.stringify(user.deviceTokens),
-			},
+		const bankCount = await BankConnection.countDocuments({
+			userId,
+			status: "Active",
 		});
-	} catch (error) {
-		console.error("Debug error:", error);
-		res.status(500).json({ error: error.message });
+		const canConnect = bankCount < limits[plan];
+
+		res.status(200).json({
+			success: true,
+			canConnect,
+			message: canConnect
+				? "You can connect bank accounts"
+				: "Upgrade to connect bank accounts",
+			remaining: limits[plan] - bankCount,
+			plan,
+		});
+	} catch (err) {
+		res.status(500).json({ error: err.message });
+	}
+};
+
+export const deleteAccount = async (req, res) => {
+	try {
+		const { reason } = req.body;
+		const user = await User.findById(req.user._id);
+
+		if (!user) return res.status(404).json({ error: "User not found" });
+
+		user.deletedReason = reason;
+		await user.save();
+		await User.findByIdAndDelete(req.user._id);
+
+		res
+			.status(200)
+			.json({ success: true, message: "Account deleted successfully" });
+	} catch (err) {
+		res.status(500).json({ error: err.message });
 	}
 };
