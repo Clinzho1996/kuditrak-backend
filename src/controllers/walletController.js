@@ -1,32 +1,148 @@
+// controllers/walletController.js
 import axios from "axios";
-
-import { sendTopUpNotification } from "../services/notificationService.js";
-import { createTopUp } from "../services/paymentGateway.js";
-
 import mongoose from "mongoose";
 import BankConnection from "../models/BankConnection.js";
 import Transaction from "../models/Transaction.js";
 import Wallet from "../models/Wallet.js";
+import { getOrCreateVirtualAccount } from "../services/dvaService.js";
+import { sendTopUpNotification } from "../services/notificationService.js";
 import {
 	getOrCreateRecipient,
 	initiatePayout,
 } from "../services/paymentGateway.js";
+import userVirtualAccount from "../models/userVirtualAccount.js";
 
-// backend/controllers/walletController.js
+// ================= DVA (Dedicated Virtual Account) Methods =================
+
+// Get or create virtual account for user
+export const getVirtualAccount = async (req, res) => {
+	try {
+		const result = await getOrCreateVirtualAccount(req.user);
+
+		if (result.success) {
+			res.json({
+				success: true,
+				accountNumber: result.accountNumber,
+				bankName: result.bankName,
+				accountName: result.accountName,
+				provider: result.provider,
+			});
+		} else {
+			res
+				.status(500)
+				.json({ success: false, error: "Failed to create virtual account" });
+		}
+	} catch (err) {
+		console.error("Get virtual account error:", err);
+		res.status(500).json({ error: err.message });
+	}
+};
+
+// Webhook handler for DVA credits (Paystack sends this when money is received)
+export const handleDvaWebhook = async (req, res) => {
+	try {
+		const event = req.body;
+
+		console.log("DVA Webhook received:", event.event);
+
+		// Only process charge.success events
+		if (event.event === "charge.success") {
+			const data = event.data;
+			const amountReceived = data.amount / 100; // Convert from kobo to naira
+			const paystackFee = data.fee / 100;
+
+			// Get the virtual account that received the money
+			const virtualAccount = await userVirtualAccount.findOne({
+				accountNumber: data.authorization.receiver_bank_account_number,
+				isActive: true,
+			});
+
+			if (virtualAccount) {
+				console.log(
+					`Processing DVA credit: ₦${amountReceived} for user ${virtualAccount.userId}`,
+				);
+
+				// Find user's wallet
+				const wallet = await Wallet.findOne({ userId: virtualAccount.userId });
+
+				if (wallet) {
+					// Credit the wallet
+					wallet.balance += amountReceived;
+					wallet.available += amountReceived;
+					await wallet.save();
+
+					// Create transaction record
+					await Transaction.create({
+						walletId: wallet._id,
+						userId: virtualAccount.userId,
+						transactionId: `DVA-${data.reference}-${Date.now()}`,
+						type: "income",
+						amount: amountReceived,
+						paystackFee: paystackFee,
+						source: "virtual_account",
+						status: "Completed",
+						description: `Wallet top-up via ${virtualAccount.bankName} transfer`,
+						metadata: {
+							paystackReference: data.reference,
+							paystackFee: paystackFee,
+							accountNumber: virtualAccount.accountNumber,
+							bankName: virtualAccount.bankName,
+						},
+					});
+
+					// Send notification
+					await sendTopUpNotification(
+						virtualAccount.userId,
+						amountReceived,
+						wallet.balance,
+					);
+
+					console.log(
+						`✅ User wallet credited: +₦${amountReceived}. New balance: ₦${wallet.balance}`,
+					);
+				} else {
+					console.error(`Wallet not found for user ${virtualAccount.userId}`);
+				}
+			} else {
+				console.error(
+					`Virtual account not found: ${data.authorization.receiver_bank_account_number}`,
+				);
+			}
+		}
+
+		// Always return 200 to acknowledge receipt
+		res.sendStatus(200);
+	} catch (error) {
+		console.error("Handle DVA webhook error:", error);
+		res.sendStatus(500);
+	}
+};
+
+// ================= Standard Card Payment Methods =================
+
 export const topUpWallet = async (req, res) => {
 	try {
 		const { amount } = req.body;
-
-		// Make sure userId is passed correctly
 		const userId = req.user._id;
 
-		const reference = `TRX-${Date.now()}-${userId.toString().substring(0, 8)}`;
+		// Calculate Paystack fee (1.5% + ₦100, capped at ₦2,000)
+		const calculatePaystackFee = (amt) => {
+			const percentage = amt * 0.015;
+			const flatFee = 100;
+			const total = percentage + flatFee;
+			return Math.min(total, 2000);
+		};
+
+		const paystackFee = calculatePaystackFee(amount);
+		const totalToCharge = amount + paystackFee;
+
+		const reference = `CARD-${Date.now()}-${userId.toString().substring(0, 8)}`;
 
 		const { paymentLink } = await createTopUp({
 			email: req.user.email,
-			amount,
+			amount: totalToCharge,
 			reference,
-			userId: userId, // Add this line - pass the userId
+			userId: userId,
 		});
 
 		const wallet = await Wallet.findOne({ userId: req.user._id });
@@ -36,21 +152,21 @@ export const topUpWallet = async (req, res) => {
 			walletId: wallet._id,
 			transactionId: reference,
 			type: "income",
-			amount,
-			source: "wallet",
+			amount: amount,
+			paystackFee: paystackFee,
+			totalCharged: totalToCharge,
+			source: "card",
 			status: "Pending",
-			description: "Wallet Top Up",
+			description: "Wallet Top Up (Card)",
 		});
 
-		res.json({ paymentLink, reference });
+		res.json({ paymentLink, reference, fee: paystackFee, totalToCharge });
 	} catch (err) {
 		console.error("Topup error:", err);
 		res.status(500).json({ error: err.message });
 	}
 };
 
-// backend/controllers/walletController.js
-// backend/controllers/walletController.js
 export const verifyWalletTopUp = async (req, res) => {
 	try {
 		const reference =
@@ -58,14 +174,12 @@ export const verifyWalletTopUp = async (req, res) => {
 
 		console.log("🔔 VerifyWalletTopUp called");
 		console.log("Reference:", reference);
-		console.log("Query params:", req.query);
 
 		if (!reference) {
 			console.error("No reference provided");
 			return res.redirect("kuditrak://payment/failed?error=missing_reference");
 		}
 
-		// Call the payment gateway to verify with Paystack
 		const verification = await verifyWithPaystack(reference);
 
 		if (!verification.status || verification.data.status !== "success") {
@@ -75,9 +189,7 @@ export const verifyWalletTopUp = async (req, res) => {
 			);
 		}
 
-		const transaction = await Transaction.findOne({
-			transactionId: reference,
-		});
+		const transaction = await Transaction.findOne({ transactionId: reference });
 
 		if (!transaction) {
 			console.error("Transaction not found:", reference);
@@ -96,11 +208,11 @@ export const verifyWalletTopUp = async (req, res) => {
 		if (transaction.status === "Completed") {
 			console.log("Transaction already processed");
 			return res.redirect(
-				`kuditrak://payment/success?reference=${reference}&amount=${verification.data.amount / 100}`,
+				`kuditrak://payment/success?reference=${reference}&amount=${transaction.amount}`,
 			);
 		}
 
-		const amount = verification.data.amount / 100;
+		const amount = transaction.amount; // This is the amount user receives
 
 		wallet.balance += amount;
 		wallet.available += amount;
@@ -113,15 +225,12 @@ export const verifyWalletTopUp = async (req, res) => {
 			`✅ Wallet funded: +₦${amount}, New balance: ₦${wallet.balance}`,
 		);
 
-		// Send notification AFTER wallet is updated, using userId from transaction
 		try {
 			await sendTopUpNotification(transaction.userId, amount, wallet.balance);
 		} catch (notifError) {
 			console.error("Notification error:", notifError);
-			// Don't fail the redirect if notification fails
 		}
 
-		// Redirect to app deep link
 		const appDeepLink = `kuditrak://payment/success?reference=${reference}&amount=${amount}`;
 		console.log("🔗 Redirecting to app:", appDeepLink);
 
@@ -156,6 +265,8 @@ const verifyWithPaystack = async (reference) => {
 	}
 };
 
+// ================= Existing Methods =================
+
 export const transferFunds = async (req, res) => {
 	const { recipientId, amount } = req.body;
 	const session = await mongoose.startSession();
@@ -184,9 +295,11 @@ export const transferFunds = async (req, res) => {
 				{
 					walletId: senderWallet._id,
 					userId: req.user._id,
-					type: "Transfer",
+					type: "expense",
 					amount,
 					status: "Completed",
+					description: `Transfer to user ${recipientId}`,
+					source: "wallet",
 					metadata: {
 						fromUserId: req.user._id,
 						toUserId: recipientId,
@@ -199,11 +312,11 @@ export const transferFunds = async (req, res) => {
 
 		await session.commitTransaction();
 		session.endSession();
-		res.status(200).json({ message: "Transfer successful" });
+		res.status(200).json({ success: true, message: "Transfer successful" });
 	} catch (err) {
 		await session.abortTransaction();
 		session.endSession();
-		res.status(400).json({ error: err.message });
+		res.status(400).json({ success: false, error: err.message });
 	}
 };
 
@@ -226,7 +339,6 @@ export const allocateSavings = async (req, res) => {
 		}).session(session);
 		if (!bucket) throw new Error("Bucket not found");
 
-		// CAST BOTH wallet and amount to numbers to prevent concatenation
 		wallet.allocated = Number(wallet.allocated || 0) + Number(amount);
 		wallet.available = Number(wallet.available || 0) - Number(amount);
 		await wallet.save({ session });
@@ -256,37 +368,38 @@ export const allocateSavings = async (req, res) => {
 		await session.commitTransaction();
 		session.endSession();
 
-		res
-			.status(200)
-			.json({ message: "Allocated to savings bucket", bucket, wallet });
+		res.status(200).json({
+			success: true,
+			message: "Allocated to savings bucket",
+			bucket,
+			wallet,
+		});
 	} catch (err) {
 		await session.abortTransaction();
 		session.endSession();
-		res.status(400).json({ error: err.message });
+		res.status(400).json({ success: false, error: err.message });
 	}
 };
 
 export const getBalance = async (req, res) => {
 	const wallet = await Wallet.findOne({ userId: req.user._id });
 	res.status(200).json({
+		success: true,
 		balance: wallet.balance,
 		allocated: wallet.allocated,
 		available: wallet.available,
 	});
 };
 
-// backend/controllers/walletController.js
-
 export const withdrawToBank = async (req, res) => {
 	const { amount, bankAccountId } = req.body;
 	const AMOUNT = Number(amount);
 
-	// Dynamic fee function
 	const calculateWithdrawalFee = (amt) => {
-		if (amt <= 50000) return 100; // ₦100 for ≤50k
-		if (amt <= 500000) return 500; // ₦500 for ≤500k
-		if (amt <= 1000000) return 1000; // ₦1k for ≤1M
-		return Math.ceil(amt * 0.01); // 1% for >1M
+		if (amt <= 50000) return 100;
+		if (amt <= 500000) return 500;
+		if (amt <= 1000000) return 1000;
+		return Math.ceil(amt * 0.01);
 	};
 
 	const WITHDRAWAL_FEE = calculateWithdrawalFee(AMOUNT);
@@ -316,7 +429,6 @@ export const withdrawToBank = async (req, res) => {
 
 		if (!bankAccount) throw new Error("Bank account not found");
 
-		// Get or create recipient
 		let recipientResult;
 		try {
 			recipientResult = await getOrCreateRecipient(bankAccount);
@@ -331,7 +443,6 @@ export const withdrawToBank = async (req, res) => {
 			);
 		}
 
-		// Initiate payout (full amount sent)
 		const payoutReference = `PAYOUT-${req.user._id}-${Date.now()}`;
 		const payoutResult = await initiatePayout({
 			amount: AMOUNT,
@@ -343,12 +454,10 @@ export const withdrawToBank = async (req, res) => {
 
 		if (!payoutResult.success) throw new Error(payoutResult.message);
 
-		// Deduct total (amount + fee) from wallet
 		wallet.balance -= totalDeduction;
 		wallet.available -= totalDeduction;
 		await wallet.save({ session });
 
-		// Record transaction
 		await Transaction.create(
 			[
 				{
