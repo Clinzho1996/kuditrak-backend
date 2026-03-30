@@ -10,7 +10,11 @@ const userVirtualAccountSchema = new mongoose.Schema({
 	},
 	bankName: { type: String, required: true },
 	accountName: { type: String, required: true },
-	provider: { type: String, enum: ["paystack-titan", "wema"], default: "wema" },
+	provider: {
+		type: String,
+		enum: ["paystack-titan", "wema", "wema-bank"],
+		default: "wema",
+	},
 	customerCode: { type: String },
 	isActive: { type: Boolean, default: true },
 	createdAt: { type: Date, default: Date.now },
