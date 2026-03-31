@@ -2,9 +2,9 @@
 export const LIMITS = {
 	free: {
 		manualTransactions: 20,
-		bankConnections: 0,
+		bankConnections: 1,
 		budgets: 3,
-		savingBuckets: 3, // Added saving buckets limit
+		savingBuckets: 3,
 	},
 	basic: {
 		manualTransactions: 25,
