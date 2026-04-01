@@ -420,17 +420,17 @@ export const getTransactionHistory = async (req, res) => {
 
 // backend/controllers/transactionController.js
 
+// backend/controllers/transactionController.js
+
 export const pullMonoTransactions = async (req, res) => {
 	try {
 		const { accountId } = req.params;
-		const { perPage = 100 } = req.query; // Use 100 to get more per page
+		const { perPage = 100 } = req.query;
 
 		console.error("========================================");
 		console.error("🔵 MONO PULL TRANSACTIONS STARTED");
 		console.error("========================================");
 		console.error(`📋 Account ID: ${accountId}`);
-		console.error(`📄 Per Page: ${perPage}`);
-		console.error(`🕐 Time: ${new Date().toISOString()}`);
 
 		// Find the bank connection
 		let connection = await BankConnection.findOne({
@@ -442,159 +442,61 @@ export const pullMonoTransactions = async (req, res) => {
 		}).populate("userId", "email name");
 
 		if (!connection) {
-			console.error("❌ Bank connection not found for accountId:", accountId);
+			console.error("❌ Bank connection not found");
 			return res.status(404).json({
 				success: false,
 				error: "Bank account not found",
-				details: `No connection found for accountId: ${accountId}`,
 			});
 		}
 
-		console.error("✅ Found connection:");
-		console.error(`   - ID: ${connection._id}`);
-		console.error(`   - User: ${connection.userId?.email || "Unknown"}`);
-		console.error(`   - Mono Account ID: ${connection.monoAccountId}`);
-		console.error(`   - Last Sync: ${connection.lastSync || "Never"}`);
+		console.error("✅ Found connection:", connection.bankName);
+		console.error(`   Mono Account ID: ${connection.monoAccountId}`);
 
-		// Check if Mono client is initialized
-		if (!mono) {
-			console.error("❌ Mono service not initialized");
-			return res.status(500).json({
-				success: false,
-				error: "Mono service not initialized",
-			});
-		}
-
-		// Fetch all transactions by using a larger page size and looping until we get less than requested
+		// Fetch all pages
 		let allTransactions = [];
 		let currentPage = 1;
 		let hasMore = true;
 		let totalFromAPI = 0;
-		const maxPages = 20; // Safety limit
 
-		while (hasMore && currentPage <= maxPages) {
+		while (hasMore && currentPage <= 20) {
 			console.error(`📥 Fetching page ${currentPage}...`);
 
-			const params = {
-				page: currentPage,
-				perPage: parseInt(perPage), // Use the same perPage value
-			};
-
-			try {
-				const response = await mono.get(
-					`/accounts/${connection.monoAccountId}/transactions`,
-					{ params },
-				);
-				const transactions = response.data.data || [];
-				const meta = response.data.meta || {};
-
-				totalFromAPI = meta.total || 0;
-				const transactionsOnPage = transactions.length;
-
-				console.error(
-					`   Found ${transactionsOnPage} transactions on page ${currentPage} (Total: ${totalFromAPI})`,
-				);
-
-				if (transactionsOnPage === 0) {
-					break;
-				}
-
-				allTransactions = [...allTransactions, ...transactions];
-
-				// Check if there are more pages
-				// If we got less than requested, this is the last page
-				if (transactionsOnPage < parseInt(perPage)) {
-					console.error(
-						`   Got less than ${perPage} transactions, this is the last page`,
-					);
-					hasMore = false;
-				} else {
-					currentPage++;
-					hasMore = true;
-				}
-			} catch (error) {
-				console.error(`   Error fetching page ${currentPage}:`, error.message);
-				break;
-			}
-		}
-
-		console.error(
-			`📊 Total transactions fetched from Mono: ${allTransactions.length} (API Total: ${totalFromAPI})`,
-		);
-
-		// If we still don't have all transactions, try with perPage=50 as fallback
-		if (allTransactions.length < totalFromAPI && parseInt(perPage) !== 50) {
-			console.error(
-				`⚠️ Only fetched ${allTransactions.length} of ${totalFromAPI}, retrying with perPage=50...`,
+			const response = await mono.get(
+				`/accounts/${connection.monoAccountId}/transactions`,
+				{
+					params: { page: currentPage, perPage: 100 },
+				},
 			);
 
-			let retryTransactions = [];
-			let retryPage = 1;
-			let retryHasMore = true;
+			const transactions = response.data.data || [];
+			const meta = response.data.meta || {};
+			totalFromAPI = meta.total || 0;
 
-			while (retryHasMore && retryPage <= 20) {
-				try {
-					const response = await mono.get(
-						`/accounts/${connection.monoAccountId}/transactions`,
-						{
-							params: { page: retryPage, perPage: 50 },
-						},
-					);
+			console.error(
+				`   Found ${transactions.length} transactions (Total: ${totalFromAPI})`,
+			);
 
-					const transactions = response.data.data || [];
-					console.error(
-						`   Retry page ${retryPage}: ${transactions.length} transactions`,
-					);
+			if (transactions.length === 0) break;
 
-					if (transactions.length === 0) break;
+			allTransactions = [...allTransactions, ...transactions];
 
-					retryTransactions = [...retryTransactions, ...transactions];
-
-					if (transactions.length < 50) {
-						retryHasMore = false;
-					} else {
-						retryPage++;
-					}
-				} catch (err) {
-					console.error(`   Retry error:`, err.message);
-					break;
-				}
-			}
-
-			if (retryTransactions.length > allTransactions.length) {
-				console.error(`✅ Retry got ${retryTransactions.length} transactions`);
-				allTransactions = retryTransactions;
-			}
-		}
-
-		// Remove duplicates based on transaction ID
-		const uniqueTransactions = [];
-		const seenIds = new Set();
-
-		for (const tx of allTransactions) {
-			const id = tx.id || tx._id;
-			if (!seenIds.has(id)) {
-				seenIds.add(id);
-				uniqueTransactions.push(tx);
-			}
+			// Check if we have more pages
+			const totalFetched = allTransactions.length;
+			hasMore = totalFetched < totalFromAPI;
+			currentPage++;
 		}
 
 		console.error(
-			`📊 Unique transactions: ${uniqueTransactions.length} (removed ${allTransactions.length - uniqueTransactions.length} duplicates)`,
+			`📊 Total fetched: ${allTransactions.length} of ${totalFromAPI}`,
 		);
 
 		let savedCount = 0;
 		let updatedCount = 0;
 		let errorCount = 0;
 
-		// Process and save ALL unique transactions
-		for (const tx of uniqueTransactions) {
+		for (const tx of allTransactions) {
 			try {
 				if (!tx.id && !tx._id) {
-					console.error(
-						`⚠️ Skipping transaction with no ID:`,
-						JSON.stringify(tx),
-					);
 					errorCount++;
 					continue;
 				}
@@ -607,11 +509,20 @@ export const pullMonoTransactions = async (req, res) => {
 					type = "expense";
 				}
 
+				// CRITICAL: Convert amount from kobo to Naira
+				const amountInKobo = Math.abs(tx.amount);
+				const amountInNaira = amountInKobo / 100;
+				const balanceInNaira = tx.balance ? tx.balance / 100 : null;
+
+				console.log(
+					`💰 Transaction: ${tx.narration} - ${amountInKobo} kobo = ₦${amountInNaira.toFixed(2)}`,
+				);
+
 				const transactionData = {
 					userId: connection.userId._id || connection.userId,
 					bankConnectionId: connection._id,
 					transactionId: tx.id || tx._id,
-					amount: Math.abs(tx.amount), // Convert from kobo to naira
+					amount: amountInNaira, // Store in Naira
 					type: type,
 					description: tx.narration || tx.description || "Mono Transaction",
 					categoryId: null,
@@ -621,7 +532,7 @@ export const pullMonoTransactions = async (req, res) => {
 					createdAt: tx.date ? new Date(tx.date) : new Date(),
 					status: "Completed",
 					currency: tx.currency || "NGN",
-					balance: tx.balance,
+					balance: balanceInNaira, // Store balance in Naira
 					metadata: {
 						monoId: tx.id || tx._id,
 						originalType: tx.type,
@@ -629,84 +540,49 @@ export const pullMonoTransactions = async (req, res) => {
 					},
 				};
 
-				// Check if transaction already exists
-				const existingTransaction = await Transaction.findOne({
-					transactionId: tx.id || tx._id,
-					userId: connection.userId._id || connection.userId,
-				});
+				const result = await Transaction.updateOne(
+					{
+						transactionId: tx.id || tx._id,
+						userId: connection.userId._id || connection.userId,
+					},
+					{ $set: transactionData },
+					{ upsert: true },
+				);
 
-				if (!existingTransaction) {
-					await Transaction.create(transactionData);
+				if (result.upsertedCount > 0) {
 					savedCount++;
-					if (savedCount % 50 === 0) {
-						console.error(`   Saved ${savedCount} new transactions...`);
-					}
-				} else {
-					// Update existing transaction
-					await Transaction.updateOne(
-						{
-							transactionId: tx.id || tx._id,
-							userId: connection.userId._id || connection.userId,
-						},
-						{ $set: transactionData },
-					);
+				} else if (result.modifiedCount > 0) {
 					updatedCount++;
 				}
 			} catch (txError) {
-				console.error(
-					`❌ Error processing transaction ${tx.id || tx._id}:`,
-					txError.message,
-				);
+				console.error(`❌ Error:`, txError.message);
 				errorCount++;
 			}
 		}
 
-		// Update last sync time
 		connection.lastSync = new Date();
 		await connection.save();
 
 		console.error(`\n📈 Sync Summary:`);
-		console.error(`   - New Transactions: ${savedCount}`);
-		console.error(`   - Updated Transactions: ${updatedCount}`);
+		console.error(`   - New: ${savedCount}`);
+		console.error(`   - Updated: ${updatedCount}`);
 		console.error(`   - Errors: ${errorCount}`);
-		console.error(`   - Total Processed: ${uniqueTransactions.length}`);
-		console.error(`   - API Total: ${totalFromAPI}`);
-		console.error(`\n✅ MONO PULL COMPLETED SUCCESSFULLY`);
-		console.error(`🕐 Completed at: ${new Date().toISOString()}`);
-		console.error("========================================\n");
+		console.error(`\n✅ MONO PULL COMPLETED`);
 
 		res.json({
 			success: true,
-			page: 1,
 			total: totalFromAPI,
-			fetched: uniqueTransactions.length,
+			fetched: allTransactions.length,
 			saved: savedCount,
 			updated: updatedCount,
 			errors: errorCount,
-			hasNext: false,
 			syncTime: new Date().toISOString(),
-			connectionInfo: {
-				bankName: connection.bankName,
-				lastSync: connection.lastSync,
-			},
 		});
 	} catch (err) {
-		console.error("❌ FATAL ERROR pulling Mono transactions:");
-		console.error(`   Message: ${err.message}`);
-		console.error(`   Stack: ${err.stack}`);
-		if (err.response) {
-			console.error(`   Response Status: ${err.response.status}`);
-			console.error(
-				`   Response Data:`,
-				JSON.stringify(err.response.data, null, 2),
-			);
-		}
-
+		console.error("❌ FATAL ERROR:", err);
 		res.status(500).json({
 			success: false,
 			error: err.message,
-			details: err.response?.data || "Internal server error",
-			timestamp: new Date().toISOString(),
 		});
 	}
 };
