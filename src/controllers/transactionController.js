@@ -20,10 +20,6 @@ export const listTransactions = async (req, res) => {
 	}
 };
 
-// Create manual transaction
-// Update createTransaction to automatically update budget spent if category matches
-// backend/controllers/transactionController.js - Add this at the beginning of createTransaction
-
 export const createTransaction = async (req, res) => {
 	try {
 		const { amount, type, description, categoryId, date } = req.body;
@@ -106,7 +102,7 @@ export const createTransaction = async (req, res) => {
 		await sendTransactionNotification(
 			req.user._id,
 			amount,
-			wallet.balance,
+			wallet?.balance || 0,
 			type,
 		);
 		console.log("Transaction created successfully:", transaction._id);
@@ -115,7 +111,6 @@ export const createTransaction = async (req, res) => {
 	} catch (err) {
 		console.error("CreateTransaction error:", err);
 		console.error("Error stack:", err.stack);
-		// Send more specific error message
 		res.status(500).json({
 			error: err.message,
 			details: process.env.NODE_ENV === "development" ? err.stack : undefined,
@@ -124,7 +119,6 @@ export const createTransaction = async (req, res) => {
 };
 
 // Update a transaction
-// Update transaction - also update budget spent
 export const updateTransaction = async (req, res) => {
 	try {
 		const { id } = req.params;
@@ -226,7 +220,6 @@ export const updateTransaction = async (req, res) => {
 };
 
 // Delete a transaction
-// Delete transaction - also revert budget spent
 export const deleteTransaction = async (req, res) => {
 	try {
 		const { id } = req.params;
@@ -279,8 +272,8 @@ export const getUnbudgetedTransactions = async (req, res) => {
 	try {
 		const transactions = await Transaction.find({
 			userId: req.user._id,
-			budgetId: { $exists: false },
-		});
+			budgetId: { $exists: false, $eq: null },
+		}).sort({ date: -1 });
 
 		res.status(200).json({
 			success: true,
@@ -295,8 +288,8 @@ export const getBudgetTransactions = async (req, res) => {
 	try {
 		const transactions = await Transaction.find({
 			userId: req.user._id,
-			budgetId: { $exists: true },
-		});
+			budgetId: { $exists: true, $ne: null },
+		}).sort({ date: -1 });
 
 		res.status(200).json({
 			success: true,
@@ -331,7 +324,6 @@ export const getTransactionById = async (req, res) => {
 	}
 };
 
-// backend/controllers/transactionController.js
 export const linkTransactionToBudget = async (req, res) => {
 	try {
 		const { transactionId, budgetId } = req.body;
@@ -402,17 +394,23 @@ export const linkTransactionToBudget = async (req, res) => {
 export const getTransactionHistory = async (req, res) => {
 	try {
 		const { page = 1, limit = 20 } = req.query;
+		const skip = (parseInt(page) - 1) * parseInt(limit);
 
 		const transactions = await Transaction.find({
 			userId: req.user._id,
 		})
 			.sort({ date: -1 })
-			.skip((page - 1) * limit)
-			.limit(Number(limit));
+			.skip(skip)
+			.limit(parseInt(limit));
+
+		const total = await Transaction.countDocuments({ userId: req.user._id });
+		const totalPages = Math.ceil(total / parseInt(limit));
 
 		res.status(200).json({
 			success: true,
-			page,
+			page: parseInt(page),
+			totalPages,
+			total,
 			transactions,
 		});
 	} catch (err) {
@@ -420,6 +418,7 @@ export const getTransactionHistory = async (req, res) => {
 	}
 };
 
+// Fixed Mono Transactions Pull
 export const pullMonoTransactions = async (req, res) => {
 	try {
 		const { accountId } = req.params;
@@ -428,28 +427,51 @@ export const pullMonoTransactions = async (req, res) => {
 		console.log("Pulling transactions for account:", accountId);
 		console.log(`Page: ${page}, Per Page: ${perPage}`);
 
-		// Find the bank connection
-		const connection = await BankConnection.findOne({
-			monoAccountId: accountId,
+		// Find the bank connection - try both fields
+		let connection = await BankConnection.findOne({
+			$or: [
+				{ monoAccountId: accountId },
+				{ _id: accountId },
+				{ accountId: accountId },
+			],
 		});
 
 		if (!connection) {
-			return res
-				.status(404)
-				.json({ success: false, error: "Bank account not found" });
+			return res.status(404).json({
+				success: false,
+				error: "Bank account not found",
+				details: `No connection found for accountId: ${accountId}`,
+			});
+		}
+
+		console.log("Found connection:", connection._id);
+
+		// Check if Mono client is initialized
+		if (!mono) {
+			return res.status(500).json({
+				success: false,
+				error: "Mono service not initialized",
+			});
 		}
 
 		// Fetch transactions from Mono with pagination
 		const response = await mono.get(
-			`/accounts/${accountId}/transactions?page=${page}&perPage=${perPage}`,
+			`/accounts/${connection.monoAccountId}/transactions?page=${page}&perPage=${perPage}`,
 		);
 
-		const transactions = response.data.data;
-		const meta = response.data.meta;
+		if (!response.data) {
+			return res.status(500).json({
+				success: false,
+				error: "Invalid response from Mono API",
+			});
+		}
+
+		const transactions = response.data.data || [];
+		const meta = response.data.meta || {};
 
 		console.log(`Found ${transactions?.length || 0} transactions`);
 		console.log(
-			`Total: ${meta?.total}, Page: ${meta?.page}/${Math.ceil(meta?.total / perPage)}`,
+			`Total: ${meta?.total}, Page: ${meta?.page || page}/${Math.ceil((meta?.total || 0) / perPage)}`,
 		);
 
 		let savedCount = 0;
@@ -457,6 +479,9 @@ export const pullMonoTransactions = async (req, res) => {
 
 		// Process and save transactions
 		for (const tx of transactions) {
+			// Skip if no transaction ID
+			if (!tx.id) continue;
+
 			const transactionData = {
 				userId: connection.userId,
 				bankConnectionId: connection._id,
@@ -477,8 +502,12 @@ export const pullMonoTransactions = async (req, res) => {
 				},
 			};
 
+			// Use updateOne with upsert to avoid duplicates
 			const result = await Transaction.updateOne(
-				{ transactionId: tx.id },
+				{
+					transactionId: tx.id,
+					userId: connection.userId,
+				},
 				{ $set: transactionData },
 				{ upsert: true },
 			);
@@ -496,24 +525,23 @@ export const pullMonoTransactions = async (req, res) => {
 
 		res.json({
 			success: true,
-			page: meta?.page,
-			total: meta?.total,
+			page: parseInt(page),
+			total: meta?.total || 0,
 			count: transactions.length,
 			saved: savedCount,
 			updated: updatedCount,
 			hasNext: !!meta?.next,
-			nextPage: meta?.next ? meta.page + 1 : null,
-			transactions,
+			nextPage: meta?.next ? parseInt(page) + 1 : null,
+			transactions: transactions,
 		});
 	} catch (err) {
-		console.error(
-			"Error pulling Mono transactions:",
-			err.response?.data || err.message,
-		);
+		console.error("Error pulling Mono transactions:", err);
+		console.error("Error details:", err.response?.data || err.message);
+
 		res.status(500).json({
 			success: false,
 			error: err.message,
-			details: err.response?.data,
+			details: err.response?.data || "Internal server error",
 		});
 	}
 };
@@ -524,7 +552,11 @@ export const pullAllMonoTransactions = async (req, res) => {
 		const { accountId } = req.params;
 
 		const connection = await BankConnection.findOne({
-			monoAccountId: accountId,
+			$or: [
+				{ monoAccountId: accountId },
+				{ _id: accountId },
+				{ accountId: accountId },
+			],
 		});
 
 		if (!connection) {
@@ -536,48 +568,73 @@ export const pullAllMonoTransactions = async (req, res) => {
 		let allTransactions = [];
 		let page = 1;
 		let hasMore = true;
+		const perPage = 50;
 
 		while (hasMore) {
 			console.log(`Fetching page ${page}...`);
 
-			const response = await mono.get(
-				`/accounts/${accountId}/transactions?page=${page}&perPage=50`,
-			);
+			try {
+				const response = await mono.get(
+					`/accounts/${connection.monoAccountId}/transactions?page=${page}&perPage=${perPage}`,
+				);
 
-			const transactions = response.data.data;
-			const meta = response.data.meta;
+				const transactions = response.data.data;
+				const meta = response.data.meta;
 
-			if (transactions && transactions.length > 0) {
-				allTransactions = [...allTransactions, ...transactions];
+				if (transactions && transactions.length > 0) {
+					allTransactions = [...allTransactions, ...transactions];
+				}
+
+				hasMore =
+					!!meta?.next && transactions && transactions.length === perPage;
+				page++;
+			} catch (error) {
+				console.error(`Error fetching page ${page}:`, error.message);
+				break;
 			}
-
-			hasMore = !!meta?.next;
-			page++;
 		}
 
 		console.log(`Total transactions fetched: ${allTransactions.length}`);
 
+		let savedCount = 0;
+		let updatedCount = 0;
+
 		// Save all transactions
 		for (const tx of allTransactions) {
-			await Transaction.updateOne(
-				{ transactionId: tx.id },
+			const result = await Transaction.updateOne(
+				{
+					transactionId: tx.id,
+					userId: connection.userId,
+				},
 				{
 					$set: {
 						userId: connection.userId,
 						bankConnectionId: connection._id,
 						transactionId: tx.id,
 						amount: Math.abs(tx.amount),
-						description: tx.narration || tx.description,
+						description: tx.narration || tx.description || "Mono Transaction",
 						type: tx.type === "debit" ? "expense" : "income",
 						date: tx.date ? new Date(tx.date) : new Date(),
 						source: "bank",
 						status: "Completed",
 						currency: tx.currency || "NGN",
 						balance: tx.balance,
+						category: tx.category,
+						metadata: {
+							monoId: tx.id,
+							originalType: tx.type,
+							narration: tx.narration,
+						},
 					},
 				},
 				{ upsert: true },
 			);
+
+			if (result.upsertedCount > 0) {
+				savedCount++;
+			} else if (result.modifiedCount > 0) {
+				updatedCount++;
+			}
 		}
 
 		connection.lastSync = new Date();
@@ -586,6 +643,8 @@ export const pullAllMonoTransactions = async (req, res) => {
 		res.json({
 			success: true,
 			total: allTransactions.length,
+			saved: savedCount,
+			updated: updatedCount,
 			message: `Synced ${allTransactions.length} transactions`,
 		});
 	} catch (err) {
@@ -594,5 +653,52 @@ export const pullAllMonoTransactions = async (req, res) => {
 			success: false,
 			error: err.message,
 		});
+	}
+};
+
+// Get all bank transactions with pagination
+export const getAllBankTransactions = async (req, res) => {
+	try {
+		const { page = 1, limit = 20 } = req.query;
+		const skip = (parseInt(page) - 1) * parseInt(limit);
+
+		const transactions = await Transaction.find({
+			userId: req.user._id,
+			source: "bank",
+		})
+			.sort({ date: -1 })
+			.skip(skip)
+			.limit(parseInt(limit));
+
+		const total = await Transaction.countDocuments({
+			userId: req.user._id,
+			source: "bank",
+		});
+
+		res.status(200).json({
+			success: true,
+			page: parseInt(page),
+			total,
+			hasNext: skip + transactions.length < total,
+			transactions,
+		});
+	} catch (err) {
+		console.error("Get all bank transactions error:", err);
+		res.status(500).json({ error: err.message });
+	}
+};
+
+// Sync bank transactions (force pull)
+export const syncBankTransactions = async (req, res) => {
+	try {
+		const { accountId } = req.params;
+
+		// Call pull function with page 1
+		const result = await pullMonoTransactions(req, res);
+
+		return result;
+	} catch (err) {
+		console.error("Sync bank transactions error:", err);
+		res.status(500).json({ error: err.message });
 	}
 };
