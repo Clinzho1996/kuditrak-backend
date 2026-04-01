@@ -419,19 +419,28 @@ export const getTransactionHistory = async (req, res) => {
 };
 
 // Fixed pullMonoTransactions using the mono service
+// backend/controllers/transactionController.js
+
 export const pullMonoTransactions = async (req, res) => {
 	try {
 		const { accountId } = req.params;
 		const { page = 1, perPage = 50 } = req.query;
 
-		console.log("========================================");
-		console.log("🔵 MONO PULL TRANSACTIONS STARTED");
-		console.log("========================================");
-		console.log(`📋 Account ID: ${accountId}`);
-		console.log(`📄 Page: ${page}, Per Page: ${perPage}`);
+		// Use console.error for immediate flush on Render
+		console.error("========================================");
+		console.error("🔵 MONO PULL TRANSACTIONS STARTED");
+		console.error("========================================");
+		console.error(`📋 Account ID: ${accountId}`);
+		console.error(`📄 Page: ${page}, Per Page: ${perPage}`);
+		console.error(`🕐 Time: ${new Date().toISOString()}`);
+
+		// Force flush logs on Render
+		if (process.env.NODE_ENV === "production") {
+			console.error("Forcing log flush...");
+		}
 
 		// Find the bank connection
-		const connection = await BankConnection.findOne({
+		let connection = await BankConnection.findOne({
 			$or: [
 				{ monoAccountId: accountId },
 				{ _id: accountId },
@@ -440,7 +449,7 @@ export const pullMonoTransactions = async (req, res) => {
 		}).populate("userId", "email name");
 
 		if (!connection) {
-			console.log("❌ Bank connection not found for accountId:", accountId);
+			console.error("❌ Bank connection not found for accountId:", accountId);
 			return res.status(404).json({
 				success: false,
 				error: "Bank account not found",
@@ -448,41 +457,75 @@ export const pullMonoTransactions = async (req, res) => {
 			});
 		}
 
-		console.log("✅ Found connection:");
-		console.log(`   - ID: ${connection._id}`);
-		console.log(`   - User: ${connection.userId?.email || "Unknown"}`);
-		console.log(`   - Mono Account ID: ${connection.monoAccountId}`);
-		console.log(`   - Last Sync: ${connection.lastSync || "Never"}`);
+		console.error("✅ Found connection:");
+		console.error(`   - ID: ${connection._id}`);
+		console.error(`   - User: ${connection.userId?.email || "Unknown"}`);
+		console.error(`   - Mono Account ID: ${connection.monoAccountId}`);
+		console.error(`   - Last Sync: ${connection.lastSync || "Never"}`);
 
-		// Fetch transactions from Mono using the service
+		// Check if Mono client is initialized
+		if (!mono) {
+			console.error("❌ Mono service not initialized");
+			return res.status(500).json({
+				success: false,
+				error: "Mono service not initialized",
+			});
+		}
+
+		// Build URL with proper parameters
+		const url = `/accounts/${connection.monoAccountId}/transactions`;
+		const params = {
+			page: parseInt(page),
+			perPage: parseInt(perPage),
+		};
+
+		console.error(`🌐 Calling Mono API: ${url}`);
+		console.error(`   Params:`, params);
+
+		const startTime = Date.now();
+
+		let response;
 		try {
-			// Build URL
-			const url = `/accounts/${connection.monoAccountId}/transactions`;
-			const params = {
-				page: parseInt(page),
-				perPage: parseInt(perPage),
-			};
+			response = await mono.get(url, { params });
+			const endTime = Date.now();
+			console.error(`⏱️ Mono API responded in ${endTime - startTime}ms`);
+		} catch (monoError) {
+			console.error("❌ Mono API Error Details:");
+			console.error(`   Status: ${monoError.response?.status}`);
+			console.error(`   Status Text: ${monoError.response?.statusText}`);
+			console.error(
+				`   Data:`,
+				JSON.stringify(monoError.response?.data, null, 2),
+			);
+			console.error(`   Message: ${monoError.message}`);
+			throw monoError;
+		}
 
-			console.log(`🌐 Calling Mono API: ${url} with params:`, params);
+		const transactions = response.data.data || [];
+		const meta = response.data.meta || {};
 
-			const response = await mono.get(url, { params });
+		console.error(`📊 Mono Response Stats:`);
+		console.error(`   - Total Transactions: ${meta.total || 0}`);
+		console.error(`   - Current Page: ${meta.page || page}`);
+		console.error(
+			`   - Total Pages: ${Math.ceil((meta.total || 0) / perPage)}`,
+		);
+		console.error(`   - Transactions in this page: ${transactions.length}`);
+		console.error(`   - Has Next: ${!!meta.next}`);
 
-			const transactions = response.data.data || [];
-			const meta = response.data.meta || {};
+		let savedCount = 0;
+		let updatedCount = 0;
+		let errorCount = 0;
 
-			console.log(`📊 Mono Response Stats:`);
-			console.log(`   - Total Transactions: ${meta.total || 0}`);
-			console.log(`   - Current Page: ${meta.page || page}`);
-			console.log(`   - Transactions in this page: ${transactions.length}`);
-			console.log(`   - Has Next: ${!!meta.next}`);
-
-			let savedCount = 0;
-			let updatedCount = 0;
-
-			// Process and save transactions
-			for (const tx of transactions) {
+		// Process and save transactions
+		for (const tx of transactions) {
+			try {
 				if (!tx.id && !tx._id) {
-					console.log(`⚠️ Skipping transaction with no ID:`, tx);
+					console.error(
+						`⚠️ Skipping transaction with no ID:`,
+						JSON.stringify(tx),
+					);
+					errorCount++;
 					continue;
 				}
 
@@ -515,66 +558,77 @@ export const pullMonoTransactions = async (req, res) => {
 					},
 				};
 
-				// Check if transaction already exists
-				const existingTransaction = await Transaction.findOne({
-					transactionId: tx.id || tx._id,
-					userId: connection.userId._id || connection.userId,
-				});
+				const result = await Transaction.updateOne(
+					{
+						transactionId: tx.id || tx._id,
+						userId: connection.userId._id || connection.userId,
+					},
+					{ $set: transactionData },
+					{ upsert: true },
+				);
 
-				if (existingTransaction) {
-					const result = await Transaction.updateOne(
-						{
-							transactionId: tx.id || tx._id,
-							userId: connection.userId._id || connection.userId,
-						},
-						{ $set: transactionData },
-					);
-					if (result.modifiedCount > 0) updatedCount++;
-				} else {
-					await Transaction.create(transactionData);
+				if (result.upsertedCount > 0) {
 					savedCount++;
+					if (savedCount % 10 === 0) {
+						console.error(`   Saved ${savedCount} transactions...`);
+					}
+				} else if (result.modifiedCount > 0) {
+					updatedCount++;
 				}
+			} catch (txError) {
+				console.error(
+					`❌ Error processing transaction ${tx.id || tx._id}:`,
+					txError.message,
+				);
+				errorCount++;
 			}
-
-			// Update last sync time
-			connection.lastSync = new Date();
-			await connection.save();
-
-			console.log(`\n📈 Sync Summary:`);
-			console.log(`   - New Transactions: ${savedCount}`);
-			console.log(`   - Updated Transactions: ${updatedCount}`);
-			console.log(`   - Total Processed: ${transactions.length}`);
-			console.log(`\n✅ MONO PULL COMPLETED SUCCESSFULLY`);
-			console.log("========================================\n");
-
-			res.json({
-				success: true,
-				page: parseInt(page),
-				total: meta?.total || 0,
-				count: transactions.length,
-				saved: savedCount,
-				updated: updatedCount,
-				hasNext: !!meta?.next,
-				nextPage: meta?.next ? parseInt(page) + 1 : null,
-				transactions: transactions,
-				syncTime: new Date().toISOString(),
-				connectionInfo: {
-					bankName: connection.bankName,
-					lastSync: connection.lastSync,
-				},
-			});
-		} catch (monoError) {
-			console.error("❌ Mono API Error:");
-			console.error(`   Status: ${monoError.response?.status}`);
-			console.error(`   Data:`, monoError.response?.data);
-			console.error(`   Message: ${monoError.message}`);
-
-			throw monoError;
 		}
+
+		// Update last sync time
+		connection.lastSync = new Date();
+		await connection.save();
+
+		console.error(`\n📈 Sync Summary:`);
+		console.error(`   - New Transactions: ${savedCount}`);
+		console.error(`   - Updated Transactions: ${updatedCount}`);
+		console.error(`   - Errors: ${errorCount}`);
+		console.error(`   - Total Processed: ${transactions.length}`);
+		console.error(`\n✅ MONO PULL COMPLETED SUCCESSFULLY`);
+		console.error(`🕐 Completed at: ${new Date().toISOString()}`);
+		console.error("========================================\n");
+
+		// Force flush before sending response
+		if (process.env.NODE_ENV === "production") {
+			console.error("Flushing logs before response...");
+		}
+
+		res.json({
+			success: true,
+			page: parseInt(page),
+			total: meta?.total || 0,
+			count: transactions.length,
+			saved: savedCount,
+			updated: updatedCount,
+			errors: errorCount,
+			hasNext: !!meta?.next,
+			nextPage: meta?.next ? parseInt(page) + 1 : null,
+			syncTime: new Date().toISOString(),
+			connectionInfo: {
+				bankName: connection.bankName,
+				lastSync: connection.lastSync,
+			},
+		});
 	} catch (err) {
-		console.error("❌ ERROR pulling Mono transactions:");
-		console.error("Error message:", err.message);
-		console.error("Error stack:", err.stack);
+		console.error("❌ FATAL ERROR pulling Mono transactions:");
+		console.error(`   Message: ${err.message}`);
+		console.error(`   Stack: ${err.stack}`);
+		if (err.response) {
+			console.error(`   Response Status: ${err.response.status}`);
+			console.error(
+				`   Response Data:`,
+				JSON.stringify(err.response.data, null, 2),
+			);
+		}
 
 		res.status(500).json({
 			success: false,
