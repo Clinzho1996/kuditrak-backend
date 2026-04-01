@@ -423,14 +423,13 @@ export const getTransactionHistory = async (req, res) => {
 export const pullMonoTransactions = async (req, res) => {
 	try {
 		const { accountId } = req.params;
-		const { page = 1, perPage = 50, forceFresh = "true" } = req.query; // Default to forceFresh true
+		const { perPage = 100 } = req.query; // Use 100 to get more per page
 
 		console.error("========================================");
 		console.error("🔵 MONO PULL TRANSACTIONS STARTED");
 		console.error("========================================");
 		console.error(`📋 Account ID: ${accountId}`);
-		console.error(`📄 Page: ${page}, Per Page: ${perPage}`);
-		console.error(`🔄 Force Fresh: ${forceFresh}`);
+		console.error(`📄 Per Page: ${perPage}`);
 		console.error(`🕐 Time: ${new Date().toISOString()}`);
 
 		// Find the bank connection
@@ -466,18 +465,19 @@ export const pullMonoTransactions = async (req, res) => {
 			});
 		}
 
-		// Fetch ALL pages of transactions
+		// Fetch all transactions by using a larger page size and looping until we get less than requested
 		let allTransactions = [];
 		let currentPage = 1;
 		let hasMore = true;
-		const maxPages = 20; // Fetch up to 20 pages (1000 transactions)
+		let totalFromAPI = 0;
+		const maxPages = 20; // Safety limit
 
 		while (hasMore && currentPage <= maxPages) {
 			console.error(`📥 Fetching page ${currentPage}...`);
 
 			const params = {
 				page: currentPage,
-				perPage: 100, // Get more per page
+				perPage: parseInt(perPage), // Use the same perPage value
 			};
 
 			try {
@@ -488,19 +488,30 @@ export const pullMonoTransactions = async (req, res) => {
 				const transactions = response.data.data || [];
 				const meta = response.data.meta || {};
 
+				totalFromAPI = meta.total || 0;
+				const transactionsOnPage = transactions.length;
+
 				console.error(
-					`   Found ${transactions.length} transactions on page ${currentPage}`,
+					`   Found ${transactionsOnPage} transactions on page ${currentPage} (Total: ${totalFromAPI})`,
 				);
 
-				if (transactions.length === 0) {
+				if (transactionsOnPage === 0) {
 					break;
 				}
 
 				allTransactions = [...allTransactions, ...transactions];
 
 				// Check if there are more pages
-				hasMore = !!meta.next;
-				currentPage++;
+				// If we got less than requested, this is the last page
+				if (transactionsOnPage < parseInt(perPage)) {
+					console.error(
+						`   Got less than ${perPage} transactions, this is the last page`,
+					);
+					hasMore = false;
+				} else {
+					currentPage++;
+					hasMore = true;
+				}
 			} catch (error) {
 				console.error(`   Error fetching page ${currentPage}:`, error.message);
 				break;
@@ -508,15 +519,76 @@ export const pullMonoTransactions = async (req, res) => {
 		}
 
 		console.error(
-			`📊 Total transactions fetched from Mono: ${allTransactions.length}`,
+			`📊 Total transactions fetched from Mono: ${allTransactions.length} (API Total: ${totalFromAPI})`,
+		);
+
+		// If we still don't have all transactions, try with perPage=50 as fallback
+		if (allTransactions.length < totalFromAPI && parseInt(perPage) !== 50) {
+			console.error(
+				`⚠️ Only fetched ${allTransactions.length} of ${totalFromAPI}, retrying with perPage=50...`,
+			);
+
+			let retryTransactions = [];
+			let retryPage = 1;
+			let retryHasMore = true;
+
+			while (retryHasMore && retryPage <= 20) {
+				try {
+					const response = await mono.get(
+						`/accounts/${connection.monoAccountId}/transactions`,
+						{
+							params: { page: retryPage, perPage: 50 },
+						},
+					);
+
+					const transactions = response.data.data || [];
+					console.error(
+						`   Retry page ${retryPage}: ${transactions.length} transactions`,
+					);
+
+					if (transactions.length === 0) break;
+
+					retryTransactions = [...retryTransactions, ...transactions];
+
+					if (transactions.length < 50) {
+						retryHasMore = false;
+					} else {
+						retryPage++;
+					}
+				} catch (err) {
+					console.error(`   Retry error:`, err.message);
+					break;
+				}
+			}
+
+			if (retryTransactions.length > allTransactions.length) {
+				console.error(`✅ Retry got ${retryTransactions.length} transactions`);
+				allTransactions = retryTransactions;
+			}
+		}
+
+		// Remove duplicates based on transaction ID
+		const uniqueTransactions = [];
+		const seenIds = new Set();
+
+		for (const tx of allTransactions) {
+			const id = tx.id || tx._id;
+			if (!seenIds.has(id)) {
+				seenIds.add(id);
+				uniqueTransactions.push(tx);
+			}
+		}
+
+		console.error(
+			`📊 Unique transactions: ${uniqueTransactions.length} (removed ${allTransactions.length - uniqueTransactions.length} duplicates)`,
 		);
 
 		let savedCount = 0;
 		let updatedCount = 0;
 		let errorCount = 0;
 
-		// Process and save ALL transactions
-		for (const tx of allTransactions) {
+		// Process and save ALL unique transactions
+		for (const tx of uniqueTransactions) {
 			try {
 				if (!tx.id && !tx._id) {
 					console.error(
@@ -546,7 +618,7 @@ export const pullMonoTransactions = async (req, res) => {
 					categoryName: tx.category || null,
 					source: "bank",
 					date: tx.date ? new Date(tx.date) : new Date(),
-					createdAt: tx.date ? new Date(tx.date) : new Date(), // Use the actual transaction date
+					createdAt: tx.date ? new Date(tx.date) : new Date(),
 					status: "Completed",
 					currency: tx.currency || "NGN",
 					balance: tx.balance,
@@ -566,7 +638,7 @@ export const pullMonoTransactions = async (req, res) => {
 				if (!existingTransaction) {
 					await Transaction.create(transactionData);
 					savedCount++;
-					if (savedCount % 10 === 0) {
+					if (savedCount % 50 === 0) {
 						console.error(`   Saved ${savedCount} new transactions...`);
 					}
 				} else {
@@ -597,7 +669,8 @@ export const pullMonoTransactions = async (req, res) => {
 		console.error(`   - New Transactions: ${savedCount}`);
 		console.error(`   - Updated Transactions: ${updatedCount}`);
 		console.error(`   - Errors: ${errorCount}`);
-		console.error(`   - Total Processed: ${allTransactions.length}`);
+		console.error(`   - Total Processed: ${uniqueTransactions.length}`);
+		console.error(`   - API Total: ${totalFromAPI}`);
 		console.error(`\n✅ MONO PULL COMPLETED SUCCESSFULLY`);
 		console.error(`🕐 Completed at: ${new Date().toISOString()}`);
 		console.error("========================================\n");
@@ -605,13 +678,12 @@ export const pullMonoTransactions = async (req, res) => {
 		res.json({
 			success: true,
 			page: 1,
-			total: allTransactions.length,
-			count: allTransactions.length,
+			total: totalFromAPI,
+			fetched: uniqueTransactions.length,
 			saved: savedCount,
 			updated: updatedCount,
 			errors: errorCount,
 			hasNext: false,
-			nextPage: null,
 			syncTime: new Date().toISOString(),
 			connectionInfo: {
 				bankName: connection.bankName,
