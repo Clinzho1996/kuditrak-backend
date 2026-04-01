@@ -418,26 +418,20 @@ export const getTransactionHistory = async (req, res) => {
 	}
 };
 
-// Fixed pullMonoTransactions using the mono service
 // backend/controllers/transactionController.js
 
 export const pullMonoTransactions = async (req, res) => {
 	try {
 		const { accountId } = req.params;
-		const { page = 1, perPage = 50 } = req.query;
+		const { page = 1, perPage = 50, forceFresh = "true" } = req.query; // Default to forceFresh true
 
-		// Use console.error for immediate flush on Render
 		console.error("========================================");
 		console.error("🔵 MONO PULL TRANSACTIONS STARTED");
 		console.error("========================================");
 		console.error(`📋 Account ID: ${accountId}`);
 		console.error(`📄 Page: ${page}, Per Page: ${perPage}`);
+		console.error(`🔄 Force Fresh: ${forceFresh}`);
 		console.error(`🕐 Time: ${new Date().toISOString()}`);
-
-		// Force flush logs on Render
-		if (process.env.NODE_ENV === "production") {
-			console.error("Forcing log flush...");
-		}
 
 		// Find the bank connection
 		let connection = await BankConnection.findOne({
@@ -472,53 +466,57 @@ export const pullMonoTransactions = async (req, res) => {
 			});
 		}
 
-		// Build URL with proper parameters
-		const url = `/accounts/${connection.monoAccountId}/transactions`;
-		const params = {
-			page: parseInt(page),
-			perPage: parseInt(perPage),
-		};
+		// Fetch ALL pages of transactions
+		let allTransactions = [];
+		let currentPage = 1;
+		let hasMore = true;
+		const maxPages = 20; // Fetch up to 20 pages (1000 transactions)
 
-		console.error(`🌐 Calling Mono API: ${url}`);
-		console.error(`   Params:`, params);
+		while (hasMore && currentPage <= maxPages) {
+			console.error(`📥 Fetching page ${currentPage}...`);
 
-		const startTime = Date.now();
+			const params = {
+				page: currentPage,
+				perPage: 100, // Get more per page
+			};
 
-		let response;
-		try {
-			response = await mono.get(url, { params });
-			const endTime = Date.now();
-			console.error(`⏱️ Mono API responded in ${endTime - startTime}ms`);
-		} catch (monoError) {
-			console.error("❌ Mono API Error Details:");
-			console.error(`   Status: ${monoError.response?.status}`);
-			console.error(`   Status Text: ${monoError.response?.statusText}`);
-			console.error(
-				`   Data:`,
-				JSON.stringify(monoError.response?.data, null, 2),
-			);
-			console.error(`   Message: ${monoError.message}`);
-			throw monoError;
+			try {
+				const response = await mono.get(
+					`/accounts/${connection.monoAccountId}/transactions`,
+					{ params },
+				);
+				const transactions = response.data.data || [];
+				const meta = response.data.meta || {};
+
+				console.error(
+					`   Found ${transactions.length} transactions on page ${currentPage}`,
+				);
+
+				if (transactions.length === 0) {
+					break;
+				}
+
+				allTransactions = [...allTransactions, ...transactions];
+
+				// Check if there are more pages
+				hasMore = !!meta.next;
+				currentPage++;
+			} catch (error) {
+				console.error(`   Error fetching page ${currentPage}:`, error.message);
+				break;
+			}
 		}
 
-		const transactions = response.data.data || [];
-		const meta = response.data.meta || {};
-
-		console.error(`📊 Mono Response Stats:`);
-		console.error(`   - Total Transactions: ${meta.total || 0}`);
-		console.error(`   - Current Page: ${meta.page || page}`);
 		console.error(
-			`   - Total Pages: ${Math.ceil((meta.total || 0) / perPage)}`,
+			`📊 Total transactions fetched from Mono: ${allTransactions.length}`,
 		);
-		console.error(`   - Transactions in this page: ${transactions.length}`);
-		console.error(`   - Has Next: ${!!meta.next}`);
 
 		let savedCount = 0;
 		let updatedCount = 0;
 		let errorCount = 0;
 
-		// Process and save transactions
-		for (const tx of transactions) {
+		// Process and save ALL transactions
+		for (const tx of allTransactions) {
 			try {
 				if (!tx.id && !tx._id) {
 					console.error(
@@ -548,6 +546,7 @@ export const pullMonoTransactions = async (req, res) => {
 					categoryName: tx.category || null,
 					source: "bank",
 					date: tx.date ? new Date(tx.date) : new Date(),
+					createdAt: tx.date ? new Date(tx.date) : new Date(), // Use the actual transaction date
 					status: "Completed",
 					currency: tx.currency || "NGN",
 					balance: tx.balance,
@@ -558,21 +557,27 @@ export const pullMonoTransactions = async (req, res) => {
 					},
 				};
 
-				const result = await Transaction.updateOne(
-					{
-						transactionId: tx.id || tx._id,
-						userId: connection.userId._id || connection.userId,
-					},
-					{ $set: transactionData },
-					{ upsert: true },
-				);
+				// Check if transaction already exists
+				const existingTransaction = await Transaction.findOne({
+					transactionId: tx.id || tx._id,
+					userId: connection.userId._id || connection.userId,
+				});
 
-				if (result.upsertedCount > 0) {
+				if (!existingTransaction) {
+					await Transaction.create(transactionData);
 					savedCount++;
 					if (savedCount % 10 === 0) {
-						console.error(`   Saved ${savedCount} transactions...`);
+						console.error(`   Saved ${savedCount} new transactions...`);
 					}
-				} else if (result.modifiedCount > 0) {
+				} else {
+					// Update existing transaction
+					await Transaction.updateOne(
+						{
+							transactionId: tx.id || tx._id,
+							userId: connection.userId._id || connection.userId,
+						},
+						{ $set: transactionData },
+					);
 					updatedCount++;
 				}
 			} catch (txError) {
@@ -592,26 +597,21 @@ export const pullMonoTransactions = async (req, res) => {
 		console.error(`   - New Transactions: ${savedCount}`);
 		console.error(`   - Updated Transactions: ${updatedCount}`);
 		console.error(`   - Errors: ${errorCount}`);
-		console.error(`   - Total Processed: ${transactions.length}`);
+		console.error(`   - Total Processed: ${allTransactions.length}`);
 		console.error(`\n✅ MONO PULL COMPLETED SUCCESSFULLY`);
 		console.error(`🕐 Completed at: ${new Date().toISOString()}`);
 		console.error("========================================\n");
 
-		// Force flush before sending response
-		if (process.env.NODE_ENV === "production") {
-			console.error("Flushing logs before response...");
-		}
-
 		res.json({
 			success: true,
-			page: parseInt(page),
-			total: meta?.total || 0,
-			count: transactions.length,
+			page: 1,
+			total: allTransactions.length,
+			count: allTransactions.length,
 			saved: savedCount,
 			updated: updatedCount,
 			errors: errorCount,
-			hasNext: !!meta?.next,
-			nextPage: meta?.next ? parseInt(page) + 1 : null,
+			hasNext: false,
+			nextPage: null,
 			syncTime: new Date().toISOString(),
 			connectionInfo: {
 				bankName: connection.bankName,
