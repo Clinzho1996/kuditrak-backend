@@ -611,7 +611,7 @@ export const pullMonoTransactions = async (req, res) => {
 					userId: connection.userId._id || connection.userId,
 					bankConnectionId: connection._id,
 					transactionId: tx.id || tx._id,
-					amount: Math.abs(tx.amount) / 100, // Convert from kobo to naira
+					amount: Math.abs(tx.amount), // Convert from kobo to naira
 					type: type,
 					description: tx.narration || tx.description || "Mono Transaction",
 					categoryId: null,
