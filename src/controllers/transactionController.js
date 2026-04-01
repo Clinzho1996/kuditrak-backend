@@ -3,7 +3,7 @@ import Budget from "../models/Budget.js";
 import Category from "../models/Category.js";
 import Transaction from "../models/Transaction.js";
 import Wallet from "../models/Wallet.js";
-import mono from "../services/monoService.js";
+import mono, { pullTransactionsFromMono } from "../services/monoService.js";
 import { sendTransactionNotification } from "../services/notificationService.js";
 import { checkLimits } from "../services/subscriptionService.js";
 
@@ -418,9 +418,7 @@ export const getTransactionHistory = async (req, res) => {
 	}
 };
 
-// Fixed Mono Transactions Pull
-// backend/controllers/transactionController.js - Enhanced logging version
-
+// Fixed pullMonoTransactions using the mono service
 export const pullMonoTransactions = async (req, res) => {
 	try {
 		const { accountId } = req.params;
@@ -431,10 +429,9 @@ export const pullMonoTransactions = async (req, res) => {
 		console.log("========================================");
 		console.log(`📋 Account ID: ${accountId}`);
 		console.log(`📄 Page: ${page}, Per Page: ${perPage}`);
-		console.log(`🕐 Time: ${new Date().toISOString()}`);
 
 		// Find the bank connection
-		let connection = await BankConnection.findOne({
+		const connection = await BankConnection.findOne({
 			$or: [
 				{ monoAccountId: accountId },
 				{ _id: accountId },
@@ -456,156 +453,128 @@ export const pullMonoTransactions = async (req, res) => {
 		console.log(`   - User: ${connection.userId?.email || "Unknown"}`);
 		console.log(`   - Mono Account ID: ${connection.monoAccountId}`);
 		console.log(`   - Last Sync: ${connection.lastSync || "Never"}`);
-		console.log(`   - Bank Name: ${connection.bankName || "Unknown"}`);
 
-		// Check if Mono client is initialized
-		if (!mono) {
-			console.log("❌ Mono service not initialized");
-			return res.status(500).json({
-				success: false,
-				error: "Mono service not initialized",
-			});
-		}
-
-		// Fetch transactions from Mono
-		const monoUrl = `/accounts/${connection.monoAccountId}/transactions?page=${page}&perPage=${perPage}`;
-		console.log(`🌐 Calling Mono API: ${monoUrl}`);
-
-		const startTime = Date.now();
-		const response = await mono.get(monoUrl);
-		const endTime = Date.now();
-
-		console.log(`⏱️ Mono API responded in ${endTime - startTime}ms`);
-
-		if (!response || !response.data) {
-			console.log("❌ Invalid response from Mono API");
-			console.log("Response:", JSON.stringify(response, null, 2));
-			return res.status(500).json({
-				success: false,
-				error: "Invalid response from Mono API",
-			});
-		}
-
-		const transactions = response.data.data || [];
-		const meta = response.data.meta || {};
-
-		console.log(`📊 Mono Response Stats:`);
-		console.log(`   - Total Transactions: ${meta.total || 0}`);
-		console.log(`   - Current Page: ${meta.page || page}`);
-		console.log(`   - Total Pages: ${Math.ceil((meta.total || 0) / perPage)}`);
-		console.log(`   - Transactions in this page: ${transactions.length}`);
-		console.log(`   - Has Next: ${!!meta.next}`);
-
-		if (transactions.length > 0) {
-			console.log(`\n📝 Sample Transaction (first of ${transactions.length}):`);
-			const sample = transactions[0];
-			console.log(`   - ID: ${sample.id}`);
-			console.log(`   - Amount: ${sample.amount} ${sample.currency || "NGN"}`);
-			console.log(`   - Type: ${sample.type}`);
-			console.log(`   - Date: ${sample.date}`);
-			console.log(
-				`   - Description: ${sample.narration || sample.description}`,
-			);
-		} else {
-			console.log("⚠️ No transactions found in Mono response");
-		}
-
-		let savedCount = 0;
-		let updatedCount = 0;
-		let skippedCount = 0;
-
-		// Process and save transactions
-		for (const tx of transactions) {
-			// Skip if no transaction ID
-			if (!tx.id) {
-				console.log(`⚠️ Skipping transaction with no ID:`, tx);
-				skippedCount++;
-				continue;
-			}
-
-			const transactionData = {
-				userId: connection.userId._id || connection.userId,
-				bankConnectionId: connection._id,
-				transactionId: tx.id,
-				amount: Math.abs(tx.amount),
-				description: tx.narration || tx.description || "Mono Transaction",
-				type: tx.type === "debit" ? "expense" : "income",
-				date: tx.date ? new Date(tx.date) : new Date(),
-				source: "bank",
-				status: "Completed",
-				currency: tx.currency || "NGN",
-				balance: tx.balance,
-				category: tx.category,
-				metadata: {
-					monoId: tx.id,
-					originalType: tx.type,
-					narration: tx.narration,
-				},
+		// Fetch transactions from Mono using the service
+		try {
+			// Build URL
+			const url = `/accounts/${connection.monoAccountId}/transactions`;
+			const params = {
+				page: parseInt(page),
+				perPage: parseInt(perPage),
 			};
 
-			// Check if transaction already exists
-			const existingTransaction = await Transaction.findOne({
-				transactionId: tx.id,
-				userId: connection.userId._id || connection.userId,
-			});
+			console.log(`🌐 Calling Mono API: ${url} with params:`, params);
 
-			if (existingTransaction) {
-				console.log(`🔄 Updating existing transaction: ${tx.id}`);
-				const result = await Transaction.updateOne(
-					{
-						transactionId: tx.id,
-						userId: connection.userId._id || connection.userId,
+			const response = await mono.get(url, { params });
+
+			const transactions = response.data.data || [];
+			const meta = response.data.meta || {};
+
+			console.log(`📊 Mono Response Stats:`);
+			console.log(`   - Total Transactions: ${meta.total || 0}`);
+			console.log(`   - Current Page: ${meta.page || page}`);
+			console.log(`   - Transactions in this page: ${transactions.length}`);
+			console.log(`   - Has Next: ${!!meta.next}`);
+
+			let savedCount = 0;
+			let updatedCount = 0;
+
+			// Process and save transactions
+			for (const tx of transactions) {
+				if (!tx.id && !tx._id) {
+					console.log(`⚠️ Skipping transaction with no ID:`, tx);
+					continue;
+				}
+
+				// Determine transaction type
+				let type = "expense";
+				if (tx.type === "credit" || tx.type === "income" || tx.amount > 0) {
+					type = "income";
+				} else if (tx.type === "debit" || tx.amount < 0) {
+					type = "expense";
+				}
+
+				const transactionData = {
+					userId: connection.userId._id || connection.userId,
+					bankConnectionId: connection._id,
+					transactionId: tx.id || tx._id,
+					amount: Math.abs(tx.amount),
+					type: type,
+					description: tx.narration || tx.description || "Mono Transaction",
+					categoryId: null,
+					categoryName: tx.category || null,
+					source: "bank",
+					date: tx.date ? new Date(tx.date) : new Date(),
+					status: "Completed",
+					currency: tx.currency || "NGN",
+					balance: tx.balance,
+					metadata: {
+						monoId: tx.id || tx._id,
+						originalType: tx.type,
+						narration: tx.narration,
 					},
-					{ $set: transactionData },
-				);
-				if (result.modifiedCount > 0) updatedCount++;
-			} else {
-				console.log(`✨ Creating new transaction: ${tx.id}`);
-				const result = await Transaction.create(transactionData);
-				if (result) savedCount++;
+				};
+
+				// Check if transaction already exists
+				const existingTransaction = await Transaction.findOne({
+					transactionId: tx.id || tx._id,
+					userId: connection.userId._id || connection.userId,
+				});
+
+				if (existingTransaction) {
+					const result = await Transaction.updateOne(
+						{
+							transactionId: tx.id || tx._id,
+							userId: connection.userId._id || connection.userId,
+						},
+						{ $set: transactionData },
+					);
+					if (result.modifiedCount > 0) updatedCount++;
+				} else {
+					await Transaction.create(transactionData);
+					savedCount++;
+				}
 			}
+
+			// Update last sync time
+			connection.lastSync = new Date();
+			await connection.save();
+
+			console.log(`\n📈 Sync Summary:`);
+			console.log(`   - New Transactions: ${savedCount}`);
+			console.log(`   - Updated Transactions: ${updatedCount}`);
+			console.log(`   - Total Processed: ${transactions.length}`);
+			console.log(`\n✅ MONO PULL COMPLETED SUCCESSFULLY`);
+			console.log("========================================\n");
+
+			res.json({
+				success: true,
+				page: parseInt(page),
+				total: meta?.total || 0,
+				count: transactions.length,
+				saved: savedCount,
+				updated: updatedCount,
+				hasNext: !!meta?.next,
+				nextPage: meta?.next ? parseInt(page) + 1 : null,
+				transactions: transactions,
+				syncTime: new Date().toISOString(),
+				connectionInfo: {
+					bankName: connection.bankName,
+					lastSync: connection.lastSync,
+				},
+			});
+		} catch (monoError) {
+			console.error("❌ Mono API Error:");
+			console.error(`   Status: ${monoError.response?.status}`);
+			console.error(`   Data:`, monoError.response?.data);
+			console.error(`   Message: ${monoError.message}`);
+
+			throw monoError;
 		}
-
-		// Update last sync time
-		connection.lastSync = new Date();
-		await connection.save();
-
-		console.log(`\n📈 Sync Summary:`);
-		console.log(`   - New Transactions: ${savedCount}`);
-		console.log(`   - Updated Transactions: ${updatedCount}`);
-		console.log(`   - Skipped: ${skippedCount}`);
-		console.log(`   - Total Processed: ${transactions.length}`);
-		console.log(`\n✅ MONO PULL COMPLETED SUCCESSFULLY`);
-		console.log(`🕐 Completed at: ${new Date().toISOString()}`);
-		console.log("========================================\n");
-
-		res.json({
-			success: true,
-			page: parseInt(page),
-			total: meta?.total || 0,
-			count: transactions.length,
-			saved: savedCount,
-			updated: updatedCount,
-			hasNext: !!meta?.next,
-			nextPage: meta?.next ? parseInt(page) + 1 : null,
-			transactions: transactions,
-			syncTime: new Date().toISOString(),
-			connectionInfo: {
-				bankName: connection.bankName,
-				lastSync: connection.lastSync,
-			},
-		});
 	} catch (err) {
 		console.error("❌ ERROR pulling Mono transactions:");
 		console.error("Error message:", err.message);
 		console.error("Error stack:", err.stack);
-		if (err.response) {
-			console.error("Mono API Error Response:", {
-				status: err.response.status,
-				data: err.response.data,
-				headers: err.response.headers,
-			});
-		}
 
 		res.status(500).json({
 			success: false,
@@ -616,106 +585,30 @@ export const pullMonoTransactions = async (req, res) => {
 	}
 };
 
-// Add endpoint to fetch all transactions (handles pagination automatically)
+// New function to pull all transactions (using the service)
 export const pullAllMonoTransactions = async (req, res) => {
 	try {
 		const { accountId } = req.params;
 
 		const connection = await BankConnection.findOne({
-			$or: [
-				{ monoAccountId: accountId },
-				{ _id: accountId },
-				{ accountId: accountId },
-			],
+			$or: [{ monoAccountId: accountId }, { _id: accountId }],
 		});
 
 		if (!connection) {
-			return res
-				.status(404)
-				.json({ success: false, error: "Bank account not found" });
+			return res.status(404).json({
+				success: false,
+				error: "Bank account not found",
+			});
 		}
 
-		let allTransactions = [];
-		let page = 1;
-		let hasMore = true;
-		const perPage = 50;
-
-		while (hasMore) {
-			console.log(`Fetching page ${page}...`);
-
-			try {
-				const response = await mono.get(
-					`/accounts/${connection.monoAccountId}/transactions?page=${page}&perPage=${perPage}`,
-				);
-
-				const transactions = response.data.data;
-				const meta = response.data.meta;
-
-				if (transactions && transactions.length > 0) {
-					allTransactions = [...allTransactions, ...transactions];
-				}
-
-				hasMore =
-					!!meta?.next && transactions && transactions.length === perPage;
-				page++;
-			} catch (error) {
-				console.error(`Error fetching page ${page}:`, error.message);
-				break;
-			}
-		}
-
-		console.log(`Total transactions fetched: ${allTransactions.length}`);
-
-		let savedCount = 0;
-		let updatedCount = 0;
-
-		// Save all transactions
-		for (const tx of allTransactions) {
-			const result = await Transaction.updateOne(
-				{
-					transactionId: tx.id,
-					userId: connection.userId,
-				},
-				{
-					$set: {
-						userId: connection.userId,
-						bankConnectionId: connection._id,
-						transactionId: tx.id,
-						amount: Math.abs(tx.amount),
-						description: tx.narration || tx.description || "Mono Transaction",
-						type: tx.type === "debit" ? "expense" : "income",
-						date: tx.date ? new Date(tx.date) : new Date(),
-						source: "bank",
-						status: "Completed",
-						currency: tx.currency || "NGN",
-						balance: tx.balance,
-						category: tx.category,
-						metadata: {
-							monoId: tx.id,
-							originalType: tx.type,
-							narration: tx.narration,
-						},
-					},
-				},
-				{ upsert: true },
-			);
-
-			if (result.upsertedCount > 0) {
-				savedCount++;
-			} else if (result.modifiedCount > 0) {
-				updatedCount++;
-			}
-		}
-
-		connection.lastSync = new Date();
-		await connection.save();
+		// Use the pullTransactionsFromMono service
+		const since =
+			connection.lastSync || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // Last 30 days if never synced
+		const result = await pullTransactionsFromMono(connection, since);
 
 		res.json({
 			success: true,
-			total: allTransactions.length,
-			saved: savedCount,
-			updated: updatedCount,
-			message: `Synced ${allTransactions.length} transactions`,
+			...result,
 		});
 	} catch (err) {
 		console.error("Error pulling all Mono transactions:", err.message);
