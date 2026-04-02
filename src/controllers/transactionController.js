@@ -422,6 +422,8 @@ export const getTransactionHistory = async (req, res) => {
 
 // backend/controllers/transactionController.js
 
+// backend/controllers/transactionController.js
+
 export const pullMonoTransactions = async (req, res) => {
 	try {
 		const { accountId } = req.params;
@@ -450,7 +452,6 @@ export const pullMonoTransactions = async (req, res) => {
 		}
 
 		console.error("✅ Found connection:", connection.bankName);
-		console.error(`   Mono Account ID: ${connection.monoAccountId}`);
 
 		// Fetch all pages
 		let allTransactions = [];
@@ -480,7 +481,6 @@ export const pullMonoTransactions = async (req, res) => {
 
 			allTransactions = [...allTransactions, ...transactions];
 
-			// Check if we have more pages
 			const totalFetched = allTransactions.length;
 			hasMore = totalFetched < totalFromAPI;
 			currentPage++;
@@ -501,29 +501,39 @@ export const pullMonoTransactions = async (req, res) => {
 					continue;
 				}
 
-				// Determine transaction type
-				let type = "expense";
-				if (tx.type === "credit" || tx.type === "income" || tx.amount > 0) {
+				// CRITICAL: Determine transaction type from originalType
+				// Mono returns: "debit" for expenses, "credit" for income
+				let type = "expense"; // default
+				let originalType = tx.type || "unknown";
+
+				if (originalType === "credit" || originalType === "income") {
 					type = "income";
-				} else if (tx.type === "debit" || tx.amount < 0) {
+				} else if (originalType === "debit") {
 					type = "expense";
+				} else {
+					// Fallback: use amount sign
+					if (tx.amount > 0) {
+						type = "income";
+					} else if (tx.amount < 0) {
+						type = "expense";
+					}
 				}
 
-				// CRITICAL: Convert amount from kobo to Naira
+				// Convert amount from kobo to Naira
 				const amountInKobo = Math.abs(tx.amount);
 				const amountInNaira = amountInKobo / 100;
 				const balanceInNaira = tx.balance ? tx.balance / 100 : null;
 
 				console.log(
-					`💰 Transaction: ${tx.narration} - ${amountInKobo} kobo = ₦${amountInNaira.toFixed(2)}`,
+					`💰 Transaction: ${tx.narration} | Type: ${originalType} -> ${type} | Amount: ${amountInKobo} kobo = ₦${amountInNaira}`,
 				);
 
 				const transactionData = {
 					userId: connection.userId._id || connection.userId,
 					bankConnectionId: connection._id,
 					transactionId: tx.id || tx._id,
-					amount: amountInNaira, // Store in Naira
-					type: type,
+					amount: amountInNaira,
+					type: type, // Use the correctly mapped type
 					description: tx.narration || tx.description || "Mono Transaction",
 					categoryId: null,
 					categoryName: tx.category || null,
@@ -532,10 +542,10 @@ export const pullMonoTransactions = async (req, res) => {
 					createdAt: tx.date ? new Date(tx.date) : new Date(),
 					status: "Completed",
 					currency: tx.currency || "NGN",
-					balance: balanceInNaira, // Store balance in Naira
+					balance: balanceInNaira,
 					metadata: {
 						monoId: tx.id || tx._id,
-						originalType: tx.type,
+						originalType: originalType, // Store original type for reference
 						narration: tx.narration,
 					},
 				};
@@ -555,7 +565,7 @@ export const pullMonoTransactions = async (req, res) => {
 					updatedCount++;
 				}
 			} catch (txError) {
-				console.error(`❌ Error:`, txError.message);
+				console.error(`❌ Error processing transaction:`, txError.message);
 				errorCount++;
 			}
 		}
