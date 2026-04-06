@@ -42,6 +42,14 @@ app.use((req, res, next) => {
 	next();
 });
 
+// ✅ HEALTH CHECK - Must respond immediately, no DB required
+app.get("/api/health", (req, res) => {
+	res.status(200).json({
+		status: "ok",
+		timestamp: new Date().toISOString(),
+	});
+});
+
 app.use(express.json());
 
 // Routes
@@ -66,9 +74,13 @@ app.use(errorMiddleware);
 // DB Connection
 mongoose
 	.connect(process.env.MONGO_URI)
-	.then(() => console.log("MongoDB connected"))
+	.then(() => {
+		console.log("MongoDB connected");
+		// Don't await here - let it run in background
+		initSubscriptionSync().catch((err) => {
+			console.error("Subscription sync failed to start:", err);
+		});
+	})
 	.catch((err) => console.error(err));
-
-await initSubscriptionSync();
 
 export default app;
