@@ -46,6 +46,8 @@ const transactionSchema = new mongoose.Schema({
 
 	// Payment specific fields
 	paystackFee: { type: Number, default: 0 },
+	processingFee: { type: Number, default: 0 }, // NEW: 0.5% fee for bank transfers
+	originalAmount: { type: Number, default: 0 }, // NEW: Original amount before fee deduction
 	totalCharged: { type: Number, default: 0 },
 	paymentMethod: {
 		type: String,

@@ -117,16 +117,13 @@ export const getVirtualAccount = async (req, res) => {
 export const handleDvaWebhook = async (req, res) => {
 	try {
 		const event = req.body;
-
 		console.log("DVA Webhook received:", event.event);
 
-		// Only process charge.success events
 		if (event.event === "charge.success") {
 			const data = event.data;
-			const amountReceived = data.amount / 100; // Convert from kobo to naira
+			const amountReceived = data.amount / 100;
 			const paystackFee = data.fee / 100;
 
-			// Get the virtual account that received the money
 			const virtualAccount = await userVirtualAccount.findOne({
 				accountNumber: data.authorization.receiver_bank_account_number,
 				isActive: true,
@@ -137,43 +134,57 @@ export const handleDvaWebhook = async (req, res) => {
 					`Processing DVA credit: ₦${amountReceived} for user ${virtualAccount.userId}`,
 				);
 
-				// Find user's wallet
 				const wallet = await Wallet.findOne({ userId: virtualAccount.userId });
 
 				if (wallet) {
-					// Credit the wallet
-					wallet.balance += amountReceived;
-					wallet.available += amountReceived;
+					const processingFee = Math.floor(amountReceived * 0.005);
+					const amountToCredit = amountReceived - processingFee;
+
+					wallet.balance += amountToCredit;
+					wallet.available += amountToCredit;
 					await wallet.save();
 
-					// Create transaction record
 					await Transaction.create({
 						walletId: wallet._id,
 						userId: virtualAccount.userId,
 						transactionId: `DVA-${data.reference}-${Date.now()}`,
 						type: "income",
-						amount: amountReceived,
+						amount: amountToCredit,
+						processingFee: processingFee,
+						originalAmount: amountReceived,
 						paystackFee: paystackFee,
 						source: "virtual_account",
 						status: "Completed",
-						description: `Wallet top-up via ${virtualAccount.bankName} transfer`,
+						description: `Wallet top-up via ${virtualAccount.bankName} transfer (0.5% fee applied)`,
 						metadata: {
 							paystackReference: data.reference,
 							paystackFee: paystackFee,
+							processingFee: processingFee,
 							accountNumber: virtualAccount.accountNumber,
 							bankName: virtualAccount.bankName,
+							originalAmount: amountReceived,
+							amountCredited: amountToCredit,
 						},
 					});
 
-					// Send notification
+					let platformWallet = await Wallet.findOne({
+						userId: process.env.SYSTEM_BUCKET_ID,
+					});
+					if (platformWallet) {
+						platformWallet.balance += processingFee;
+						platformWallet.available += processingFee;
+						await platformWallet.save();
+					}
+
+					// FIXED: Send amountToCredit instead of amountReceived
 					await sendTopUpNotification(
 						virtualAccount.userId,
-						amountReceived,
+						amountToCredit,
 						wallet.balance,
 					);
 
 					console.log(
-						`✅ User wallet credited: +₦${amountReceived}. New balance: ₦${wallet.balance}`,
+						`✅ User wallet credited: +₦${amountToCredit} (after ₦${processingFee} fee). New balance: ₦${wallet.balance}`,
 					);
 				} else {
 					console.error(`Wallet not found for user ${virtualAccount.userId}`);
@@ -185,7 +196,6 @@ export const handleDvaWebhook = async (req, res) => {
 			}
 		}
 
-		// Always return 200 to acknowledge receipt
 		res.sendStatus(200);
 	} catch (error) {
 		console.error("Handle DVA webhook error:", error);
