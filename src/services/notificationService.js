@@ -14,13 +14,13 @@ const NOTIFICATION_TEMPLATES = {
 		type: "budget_exceeded",
 	},
 	TRANSACTION_CREDIT: {
-		title: "💰 Money Received",
-		body: "₦{amount} has been added to your wallet. New balance: ₦{balance}",
+		title: "📝 Income Recorded",
+		body: "You recorded ₦{amount} income. New balance: ₦{balance}",
 		type: "transaction_credit",
 	},
 	TRANSACTION_DEBIT: {
-		title: "💸 Money Sent",
-		body: "₦{amount} has been deducted from your wallet. New balance: ₦{balance}",
+		title: "📝 Expense Recorded",
+		body: "You recorded ₦{amount} expense. New balance: ₦{balance}",
 		type: "transaction_debit",
 	},
 	SAVING_CREATED: {
@@ -153,7 +153,7 @@ export const sendTransactionNotification = async (
 ) => {
 	try {
 		const template =
-			type === "credit"
+			type === "income"
 				? NOTIFICATION_TEMPLATES.TRANSACTION_CREDIT
 				: NOTIFICATION_TEMPLATES.TRANSACTION_DEBIT;
 
