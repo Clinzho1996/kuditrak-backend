@@ -73,11 +73,12 @@ const createVirtualAccountAfterValidation = async (customerCode, user) => {
 };
 
 // Handle bank transfer funding (charge.success)
+// In webhookRoutes.js, update the handleBankTransferFunding function
+
 const handleBankTransferFunding = async (eventData) => {
 	try {
 		console.log("💰 Processing bank transfer funding...");
 
-		// Get the receiver's virtual account number
 		const receiverAccountNumber =
 			eventData.metadata?.receiver_account_number ||
 			eventData.authorization?.receiver_bank_account_number;
@@ -89,7 +90,6 @@ const handleBankTransferFunding = async (eventData) => {
 			return;
 		}
 
-		// Find the virtual account
 		const virtualAccount = await userVirtualAccount.findOne({
 			accountNumber: receiverAccountNumber,
 			isActive: true,
@@ -102,7 +102,6 @@ const handleBankTransferFunding = async (eventData) => {
 
 		console.log(`✅ Found virtual account for user: ${virtualAccount.userId}`);
 
-		// Get the user's wallet
 		const wallet = await Wallet.findOne({ userId: virtualAccount.userId });
 
 		if (!wallet) {
@@ -110,9 +109,8 @@ const handleBankTransferFunding = async (eventData) => {
 			return;
 		}
 
-		// Get the amount from the webhook
-		const amount = eventData.amount / 100; // Convert from kobo to naira
-		const paystackFee = eventData.fees / 100; // Convert from kobo to naira
+		const amount = eventData.amount / 100;
+		const paystackFee = eventData.fees / 100;
 		const senderName = eventData.authorization?.sender_name || "Unknown";
 		const senderAccount =
 			eventData.authorization?.sender_bank_account_number || "Unknown";
@@ -122,10 +120,32 @@ const handleBankTransferFunding = async (eventData) => {
 			`💰 Amount: ₦${amount}, Fee: ₦${paystackFee}, Sender: ${senderName}`,
 		);
 
-		// Credit the user's wallet
-		wallet.balance += amount;
-		wallet.available += amount;
+		// === ADD THE 0.5% PROCESSING FEE ===
+		const processingFee = Math.floor(amount * 0.005); // 0.5% fee
+		const amountToCredit = amount - processingFee;
+
+		console.log(
+			`💰 Processing fee (0.5%): ₦${processingFee}, Amount to credit: ₦${amountToCredit}`,
+		);
+
+		// Credit the user's wallet with fee deducted
+		wallet.balance += amountToCredit;
+		wallet.available += amountToCredit;
 		await wallet.save();
+
+		// Add processing fee to platform wallet
+		let platformWallet = await Wallet.findOne({
+			userId: process.env.SYSTEM_BUCKET_ID,
+		});
+
+		if (platformWallet) {
+			platformWallet.balance += processingFee;
+			platformWallet.available += processingFee;
+			await platformWallet.save();
+			console.log(
+				`💰 Processing fee of ₦${processingFee} added to platform wallet`,
+			);
+		}
 
 		// Create transaction record
 		await Transaction.create({
@@ -133,9 +153,11 @@ const handleBankTransferFunding = async (eventData) => {
 			walletId: wallet._id,
 			transactionId: eventData.reference,
 			type: "income",
-			amount: amount,
+			amount: amountToCredit,
+			processingFee: processingFee,
+			originalAmount: amount,
 			status: "Completed",
-			description: `Wallet top-up via bank transfer from ${senderName}`,
+			description: `Wallet top-up via bank transfer from ${senderName} (0.5% fee applied)`,
 			source: "virtual_account",
 			paystackFee: paystackFee,
 			totalCharged: amount + paystackFee,
@@ -147,20 +169,23 @@ const handleBankTransferFunding = async (eventData) => {
 				senderBank: senderBank,
 				virtualAccountNumber: receiverAccountNumber,
 				paystackFee: paystackFee,
+				processingFee: processingFee,
+				originalAmount: amount,
+				amountCredited: amountToCredit,
 			},
 		});
 
 		console.log(
-			`✅ Wallet credited: +₦${amount}, New balance: ₦${wallet.balance}`,
+			`✅ Wallet credited: +₦${amountToCredit} (after ₦${processingFee} fee), New balance: ₦${wallet.balance}`,
 		);
 
-		// Send push notification to user
+		// Send push notification with correct amount
 		try {
 			await sendPushToUser(
 				virtualAccount.userId,
 				"💰 Wallet Funded!",
-				`₦${amount.toLocaleString()} has been added to your wallet via bank transfer.`,
-				{ type: "wallet_funded", screen: "wallet", amount: amount },
+				`₦${amountToCredit.toLocaleString()} has been added to your wallet via bank transfer.`,
+				{ type: "wallet_funded", screen: "wallet", amount: amountToCredit },
 			);
 			console.log("📱 Push notification sent");
 		} catch (notifError) {
