@@ -24,8 +24,8 @@ const registerCron = (schedule, name, job) => {
 	});
 };
 
-// Budget check every hour
-registerCron("0 * * * *", "Budget Check", async () => {
+// Budget check every 12 hours at 8am and 8pm
+registerCron("0 8,20 * * *", "Budget Check", async () => {
 	console.log("🔍 Checking budgets...");
 	const budgets = await Budget.find({});
 	console.log(`📊 Found ${budgets.length} budgets to check`);
