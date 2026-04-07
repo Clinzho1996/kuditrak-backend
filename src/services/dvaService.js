@@ -125,6 +125,34 @@ export const verifyBVN = async (bvn, user, bankAccount) => {
 
 		console.log("📥 Validation response:", validationResponse.data);
 
+		console.log("📥 Validation response:", validationResponse.data);
+
+		// Handle "already validated" case
+		if (
+			!validationResponse.data.status &&
+			validationResponse.data.message ===
+				"Customer already validated using the same credentials"
+		) {
+			console.log("✅ Customer already validated - treating as success");
+
+			// Mark as verified immediately since they're already validated
+			user.kyc.paystackValidationPending = false;
+			user.kyc.paystackValidated = true;
+			user.kyc.isVerified = true;
+			user.kyc.bvnVerified = true;
+			user.kyc.bvn = bvn;
+			user.kyc.verifiedAt = new Date();
+			await user.save();
+
+			return {
+				success: true,
+				verified: true,
+				alreadyValidated: true,
+				customerCode: customerCode,
+				message: "Customer already verified successfully",
+			};
+		}
+
 		if (validationResponse.data.status) {
 			// Mark validation as pending
 			user.kyc.paystackValidationPending = true;
@@ -147,7 +175,10 @@ export const verifyBVN = async (bvn, user, bankAccount) => {
 		console.error("❌ BVN verification error:");
 		console.error("Data:", JSON.stringify(error.response?.data, null, 2));
 
-		if (error.response?.data?.message === "Pending request already exists") {
+		const errorMessage = error.response?.data?.message;
+		const errorData = error.response?.data;
+
+		if (errorMessage === "Pending request already exists") {
 			user.kyc.paystackValidationPending = true;
 			await user.save();
 			return {
@@ -157,10 +188,36 @@ export const verifyBVN = async (bvn, user, bankAccount) => {
 			};
 		}
 
+		// Handle "already validated" case from error response
+		if (
+			errorMessage === "Customer already validated using the same credentials"
+		) {
+			console.log(
+				"✅ Customer already validated (from error) - treating as success",
+			);
+
+			// Mark as verified immediately
+			user.kyc.paystackValidationPending = false;
+			user.kyc.paystackValidated = true;
+			user.kyc.isVerified = true;
+			user.kyc.bvnVerified = true;
+			user.kyc.bvn = bvn;
+			user.kyc.verifiedAt = new Date();
+			await user.save();
+
+			return {
+				success: true,
+				verified: true,
+				alreadyValidated: true,
+				customerCode: user.kyc?.paystackCustomerCode,
+				message: "Customer already verified successfully",
+			};
+		}
+
 		return {
 			success: false,
 			message:
-				error.response?.data?.message ||
+				errorMessage ||
 				"BVN verification failed. Please check your BVN and bank account.",
 		};
 	}
