@@ -104,7 +104,15 @@ export const getSubscription = async (req, res) => {
 // ===============================
 export const syncSubscription = async (req, res) => {
 	try {
-		const { plan, productId, revenueCatId, startDate, endDate } = req.body;
+		const {
+			plan,
+			productId,
+			revenueCatId,
+			startDate,
+			endDate,
+			originalTransactionId, // Add this - RevenueCat provides this
+			appUserId, // Add this - should match the authenticated user's ID
+		} = req.body;
 
 		if (!plan) {
 			return res.status(400).json({
@@ -118,6 +126,21 @@ export const syncSubscription = async (req, res) => {
 			return res.status(404).json({ error: "User not found" });
 		}
 
+		// CRITICAL: Verify that the subscription belongs to THIS user
+		// Method 1: Check if appUserId matches the authenticated user
+		if (appUserId && appUserId !== req.user._id.toString()) {
+			console.error(
+				`Subscription ownership mismatch: ${appUserId} vs ${req.user._id}`,
+			);
+			return res.status(403).json({
+				success: false,
+				error: "Subscription does not belong to this user",
+			});
+		}
+
+		// Method 2: Store which user originally purchased the subscription
+		// You should store this mapping in a separate Subscriptions collection
+
 		// Free plan - remove subscription entirely
 		if (plan === "free") {
 			user.subscription = undefined;
@@ -130,7 +153,25 @@ export const syncSubscription = async (req, res) => {
 			});
 		}
 
-		// Paid plan - create/update subscription
+		// For paid plans, verify the subscription is valid and belongs to this user
+		// Check if this subscription was already assigned to a different user
+		const existingSubscriptionUser = await User.findOne({
+			"subscription.revenueCatId": revenueCatId,
+			_id: { $ne: user._id },
+		});
+
+		if (existingSubscriptionUser) {
+			console.error(
+				`Subscription ${revenueCatId} already belongs to user ${existingSubscriptionUser._id}`,
+			);
+			return res.status(403).json({
+				success: false,
+				error: "This subscription is already associated with another account",
+				requiresLogout: true, // Signal client to clear cached subscription data
+			});
+		}
+
+		// Store the authenticated user's ID as the owner
 		user.subscription = {
 			plan,
 			status: "active",
@@ -139,7 +180,9 @@ export const syncSubscription = async (req, res) => {
 				? new Date(endDate)
 				: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
 			productId: productId || null,
-			revenueCatId: revenueCatId || user._id.toString(),
+			revenueCatId: revenueCatId || null, // Don't default to user ID
+			originalTransactionId: originalTransactionId || null, // Store for verification
+			userId: req.user._id, // Explicitly store which user owns this
 		};
 
 		await user.save();

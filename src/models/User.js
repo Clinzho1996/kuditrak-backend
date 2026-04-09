@@ -96,6 +96,7 @@ const userSchema = new mongoose.Schema({
 	resetOtpExpires: Date,
 	resetOtpVerified: Boolean,
 
+	// backend/models/User.js - Update subscription object
 	subscription: {
 		plan: {
 			type: String,
@@ -109,6 +110,15 @@ const userSchema = new mongoose.Schema({
 			enum: ["active", "expired"],
 			default: "active",
 		},
+		// Add these fields for better tracking
+		revenueCatId: { type: String, default: null },
+		originalTransactionId: {
+			type: String,
+			default: null,
+			unique: true,
+			sparse: true,
+		}, // Unique per transaction
+		userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // Explicit ownership
 	},
 
 	notificationSettings: {
