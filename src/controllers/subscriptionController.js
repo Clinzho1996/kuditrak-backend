@@ -1,5 +1,9 @@
 // backend/controllers/subscriptionController.js
 import User from "../models/User.js";
+import {
+	linkRevenueCatUser,
+	syncUserSubscription,
+} from "../services/subscriptionSyncService.js";
 
 // ===============================
 // CLEAN DATABASE - Remove all free subscriptions
