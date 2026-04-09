@@ -138,6 +138,11 @@ const userSchema = new mongoose.Schema({
 	updatedAt: { type: Date, default: Date.now },
 });
 
+userSchema.index(
+	{ email: 1, provider: 1 },
+	{ unique: true, partialFilterExpression: { provider: { $ne: "local" } } },
+);
+
 // Transform JSON output to hide sensitive fields
 userSchema.set("toJSON", {
 	transform: (doc, ret, options) => {

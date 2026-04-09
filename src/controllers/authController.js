@@ -533,7 +533,6 @@ export const login = async (req, res) => {
 	}
 };
 
-// backend/controllers/authController.js - Update socialAuth
 export const socialAuth = async (req, res) => {
 	try {
 		const { idToken, name, email, appleUserId } = req.body;
@@ -547,40 +546,78 @@ export const socialAuth = async (req, res) => {
 		}
 
 		const decoded = await verifyFirebaseToken(idToken);
-
 		const { email: firebaseEmail, uid, firebase } = decoded;
 		const userEmail = email || firebaseEmail;
+		const authProvider = firebase.sign_in_provider || "apple.com";
 
-		// Find existing user by email or Apple user ID
-		let user = await User.findOne({
-			$or: [{ email: userEmail }, { appleUserId: appleUserId }],
-		});
+		// CRITICAL: Try to find user by Firebase UID first (most reliable)
+		let user = await User.findOne({ firebaseUid: uid });
+
+		// If not found by Firebase UID, try Apple User ID
+		if (!user && appleUserId) {
+			user = await User.findOne({ appleUserId: appleUserId });
+		}
+
+		// If still not found, try email but with provider restriction
+		if (!user && userEmail) {
+			// First, check if email exists with SAME provider
+			user = await User.findOne({
+				email: userEmail,
+				provider: { $in: [authProvider, "google.com", "apple.com"] },
+			});
+
+			// If email exists with 'local' provider, don't use that account!
+			// Instead, we'll create a new social account with same email
+			const localUserExists = await User.findOne({
+				email: userEmail,
+				provider: "local",
+			});
+
+			if (localUserExists && !user) {
+				// Email belongs to a local user - create new social account
+				console.log(
+					`📧 Email ${userEmail} exists as local account, creating separate social account`,
+				);
+				user = null; // Force creation of new social user
+			}
+		}
 
 		if (!user) {
-			// NEW USER - use the name provided by Apple
+			// NEW USER - create social account
 			let userName = name || "User";
 
-			// If name is still null, extract from email
 			if (userName === "User" && userEmail) {
 				userName = userEmail.split("@")[0];
 			}
 
+			// Handle potential email conflict by appending provider suffix if needed
+			let finalEmail = userEmail;
+			const existingEmail = await User.findOne({ email: userEmail });
+
+			if (existingEmail) {
+				// Email already taken (by local user), create unique email for social user
+				finalEmail = `${userEmail.split("@")[0]}+${authProvider}@${userEmail.split("@")[1]}`;
+				console.log(`⚠️ Email conflict, using: ${finalEmail}`);
+			}
+
 			user = await User.create({
 				fullName: userName,
-				email: userEmail,
+				email: finalEmail,
 				firebaseUid: uid,
-				provider: firebase.sign_in_provider || "apple.com",
+				provider: authProvider,
 				isVerified: true,
-				appleUserId: appleUserId, // Store Apple user ID for future reference
+				appleUserId: appleUserId || null,
 				onboardingCompleted: false,
 			});
 
 			await initializeDefaultCategories(user._id);
 			await Wallet.create({ userId: user._id });
 
-			console.log(`✅ New Apple user created: ${userName} (${userEmail})`);
+			console.log(
+				`✅ New ${authProvider} user created: ${userName} (${finalEmail})`,
+			);
 		} else {
-			// EXISTING USER - update name if it's still "User" and we have a real name
+			// EXISTING SOCIAL USER - update info
 			if (
 				(user.fullName === "User" || !user.fullName) &&
 				name &&
@@ -591,11 +628,18 @@ export const socialAuth = async (req, res) => {
 				console.log(`📝 Updated user name to: ${name} for ${user.email}`);
 			}
 
-			// Store Apple user ID if not already set
+			// Link Apple ID if not already set
 			if (appleUserId && !user.appleUserId) {
 				user.appleUserId = appleUserId;
 				await user.save();
 				console.log(`🔗 Linked Apple ID for user: ${user.email}`);
+			}
+
+			// Update Firebase UID if missing (legacy users)
+			if (!user.firebaseUid && uid) {
+				user.firebaseUid = uid;
+				await user.save();
+				console.log(`🔗 Linked Firebase UID for user: ${user.email}`);
 			}
 		}
 
@@ -620,6 +664,16 @@ export const socialAuth = async (req, res) => {
 		});
 	} catch (err) {
 		console.error("Social auth error:", err);
+
+		// Handle duplicate key error gracefully
+		if (err.code === 11000) {
+			return res.status(409).json({
+				success: false,
+				message: "Account conflict. Please login with your original method.",
+				code: "ACCOUNT_CONFLICT",
+			});
+		}
+
 		res.status(500).json({
 			success: false,
 			message: err.message,
