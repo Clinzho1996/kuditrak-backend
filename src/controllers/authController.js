@@ -550,130 +550,185 @@ export const socialAuth = async (req, res) => {
 		const userEmail = email || firebaseEmail;
 		const authProvider = firebase.sign_in_provider || "apple.com";
 
-		// CRITICAL: Try to find user by Firebase UID first (most reliable)
+		console.log(`🔐 Social auth attempt:`, {
+			email: userEmail,
+			provider: authProvider,
+			firebaseUid: uid,
+			hasAppleId: !!appleUserId,
+		});
+
+		// STRATEGY 1: Find by Firebase UID (most reliable)
 		let user = await User.findOne({ firebaseUid: uid });
 
-		// If not found by Firebase UID, try Apple User ID
-		if (!user && appleUserId) {
-			user = await User.findOne({ appleUserId: appleUserId });
+		if (user) {
+			console.log(`✅ Found user by Firebase UID: ${user._id}`);
 		}
 
-		// If still not found, try email but with provider restriction
+		// STRATEGY 2: Find by Apple User ID (for Apple Sign In)
+		if (!user && appleUserId) {
+			user = await User.findOne({ appleUserId: appleUserId });
+			if (user) {
+				console.log(`✅ Found user by Apple ID: ${user._id}`);
+			}
+		}
+
+		// STRATEGY 3: Find by email BUT only if it's a social account
 		if (!user && userEmail) {
-			// First, check if email exists with SAME provider
+			// Look for existing social account with this email
 			user = await User.findOne({
 				email: userEmail,
-				provider: { $in: [authProvider, "google.com", "apple.com"] },
+				provider: { $in: ["google", "apple", "google.com", "apple.com"] },
 			});
 
-			// If email exists with 'local' provider, don't use that account!
-			// Instead, we'll create a new social account with same email
-			const localUserExists = await User.findOne({
+			if (user) {
+				console.log(`✅ Found existing social user by email: ${user._id}`);
+				// Update Firebase UID if missing
+				if (!user.firebaseUid && uid) {
+					user.firebaseUid = uid;
+					await user.save();
+					console.log(`📝 Updated Firebase UID for existing social user`);
+				}
+			}
+		}
+
+		// If still no user found, CREATE NEW USER
+		if (!user) {
+			console.log(`🆕 Creating new ${authProvider} user...`);
+
+			// Check if email is taken by a LOCAL user
+			const existingLocalUser = await User.findOne({
 				email: userEmail,
 				provider: "local",
 			});
 
-			if (localUserExists && !user) {
-				// Email belongs to a local user - create new social account
-				console.log(
-					`📧 Email ${userEmail} exists as local account, creating separate social account`,
-				);
-				user = null; // Force creation of new social user
+			let finalEmail = userEmail;
+
+			if (existingLocalUser) {
+				// Email conflict with local user - create unique email for social user
+				const [localPart, domain] = userEmail.split("@");
+				finalEmail = `${localPart}+${authProvider.replace(".com", "")}@${domain}`;
+				console.log(`⚠️ Email conflict with local user, using: ${finalEmail}`);
 			}
-		}
 
-		if (!user) {
-			// NEW USER - create social account
 			let userName = name || "User";
-
 			if (userName === "User" && userEmail) {
 				userName = userEmail.split("@")[0];
 			}
 
-			// Handle potential email conflict by appending provider suffix if needed
-			let finalEmail = userEmail;
-			const existingEmail = await User.findOne({ email: userEmail });
+			try {
+				user = await User.create({
+					fullName: userName,
+					email: finalEmail,
+					firebaseUid: uid,
+					provider: authProvider,
+					isVerified: true,
+					appleUserId: appleUserId || null,
+					onboardingCompleted: false,
+				});
 
-			if (existingEmail) {
-				// Email already taken (by local user), create unique email for social user
-				finalEmail = `${userEmail.split("@")[0]}+${authProvider}@${userEmail.split("@")[1]}`;
-				console.log(`⚠️ Email conflict, using: ${finalEmail}`);
+				// Initialize user data
+				await initializeDefaultCategories(user._id);
+				await Wallet.create({ userId: user._id });
+
+				console.log(
+					`✅ New ${authProvider} user created successfully: ${userName} (${finalEmail})`,
+				);
+
+				// Return early with new user
+				const token = generateToken(user._id);
+				const userResponse = {
+					_id: user._id,
+					fullName: user.fullName,
+					email: user.email,
+					subscription: user.subscription,
+					onboardingCompleted: user.onboardingCompleted,
+					profileImage: user.profileImage,
+					createdAt: user.createdAt,
+				};
+
+				return res.status(200).json({
+					success: true,
+					token,
+					user: userResponse,
+					firstLogin: true,
+				});
+			} catch (createError) {
+				// Handle duplicate key error
+				if (createError.code === 11000) {
+					console.error(`❌ Duplicate key error:`, createError.keyPattern);
+
+					// Try to find the user one more time (race condition)
+					const retryUser = await User.findOne({ firebaseUid: uid });
+					if (retryUser) {
+						user = retryUser;
+						console.log(`✅ Found user on retry: ${user._id}`);
+					} else {
+						return res.status(409).json({
+							success: false,
+							message: "Unable to create account. Please try again.",
+							code: "ACCOUNT_CREATION_FAILED",
+						});
+					}
+				} else {
+					throw createError;
+				}
 			}
+		}
 
-			user = await User.create({
-				fullName: userName,
-				email: finalEmail,
-				firebaseUid: uid,
-				provider: authProvider,
-				isVerified: true,
-				appleUserId: appleUserId || null,
-				onboardingCompleted: false,
-			});
+		// EXISTING USER - Update and login
+		if (user) {
+			// Update user info if needed
+			let needsUpdate = false;
 
-			await initializeDefaultCategories(user._id);
-			await Wallet.create({ userId: user._id });
-
-			console.log(
-				`✅ New ${authProvider} user created: ${userName} (${finalEmail})`,
-			);
-		} else {
-			// EXISTING SOCIAL USER - update info
 			if (
 				(user.fullName === "User" || !user.fullName) &&
 				name &&
 				name !== "User"
 			) {
 				user.fullName = name;
-				await user.save();
-				console.log(`📝 Updated user name to: ${name} for ${user.email}`);
+				needsUpdate = true;
+				console.log(`📝 Updating user name to: ${name}`);
 			}
 
-			// Link Apple ID if not already set
 			if (appleUserId && !user.appleUserId) {
 				user.appleUserId = appleUserId;
-				await user.save();
-				console.log(`🔗 Linked Apple ID for user: ${user.email}`);
+				needsUpdate = true;
+				console.log(`🔗 Linking Apple ID for user`);
 			}
 
-			// Update Firebase UID if missing (legacy users)
 			if (!user.firebaseUid && uid) {
 				user.firebaseUid = uid;
-				await user.save();
-				console.log(`🔗 Linked Firebase UID for user: ${user.email}`);
+				needsUpdate = true;
+				console.log(`🔗 Linking Firebase UID for user`);
 			}
-		}
 
-		const token = generateToken(user._id);
+			if (needsUpdate) {
+				await user.save();
+			}
 
-		// Remove sensitive data
-		const userResponse = {
-			_id: user._id,
-			fullName: user.fullName,
-			email: user.email,
-			subscription: user.subscription,
-			onboardingCompleted: user.onboardingCompleted,
-			profileImage: user.profileImage,
-			createdAt: user.createdAt,
-		};
+			const token = generateToken(user._id);
+			const userResponse = {
+				_id: user._id,
+				fullName: user.fullName,
+				email: user.email,
+				subscription: user.subscription,
+				onboardingCompleted: user.onboardingCompleted,
+				profileImage: user.profileImage,
+				createdAt: user.createdAt,
+			};
 
-		res.status(200).json({
-			success: true,
-			token,
-			user: userResponse,
-			firstLogin: !user.onboardingCompleted,
-		});
-	} catch (err) {
-		console.error("Social auth error:", err);
-
-		// Handle duplicate key error gracefully
-		if (err.code === 11000) {
-			return res.status(409).json({
-				success: false,
-				message: "Account conflict. Please login with your original method.",
-				code: "ACCOUNT_CONFLICT",
+			return res.status(200).json({
+				success: true,
+				token,
+				user: userResponse,
+				firstLogin: !user.onboardingCompleted,
 			});
 		}
 
+		// Should never reach here
+		throw new Error("User creation failed unexpectedly");
+	} catch (err) {
+		console.error("❌ Social auth error:", err);
 		res.status(500).json({
 			success: false,
 			message: err.message,
