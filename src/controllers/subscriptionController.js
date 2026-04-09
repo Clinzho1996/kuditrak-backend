@@ -102,6 +102,7 @@ export const getSubscription = async (req, res) => {
 // ===============================
 // SYNC SUBSCRIPTION
 // ===============================
+// backend/controllers/subscriptionController.js
 export const syncSubscription = async (req, res) => {
 	try {
 		const {
@@ -110,8 +111,8 @@ export const syncSubscription = async (req, res) => {
 			revenueCatId,
 			startDate,
 			endDate,
-			originalTransactionId, // Add this - RevenueCat provides this
-			appUserId, // Add this - should match the authenticated user's ID
+			originalTransactionId, // CRITICAL: This must come from RevenueCat
+			appUserId, // RevenueCat's app_user_id
 		} = req.body;
 
 		if (!plan) {
@@ -121,31 +122,26 @@ export const syncSubscription = async (req, res) => {
 			});
 		}
 
+		// VALIDATION: If it's a paid plan, we MUST have real identifiers
+		if (plan !== "free") {
+			if (!originalTransactionId && !revenueCatId) {
+				return res.status(400).json({
+					success: false,
+					error:
+						"Paid subscriptions require originalTransactionId or revenueCatId from RevenueCat",
+				});
+			}
+		}
+
 		const user = await User.findById(req.user._id);
 		if (!user) {
 			return res.status(404).json({ error: "User not found" });
 		}
 
-		// CRITICAL: Verify that the subscription belongs to THIS user
-		// Method 1: Check if appUserId matches the authenticated user
-		if (appUserId && appUserId !== req.user._id.toString()) {
-			console.error(
-				`Subscription ownership mismatch: ${appUserId} vs ${req.user._id}`,
-			);
-			return res.status(403).json({
-				success: false,
-				error: "Subscription does not belong to this user",
-			});
-		}
-
-		// Method 2: Store which user originally purchased the subscription
-		// You should store this mapping in a separate Subscriptions collection
-
-		// Free plan - remove subscription entirely
+		// Free plan - remove subscription
 		if (plan === "free") {
 			user.subscription = undefined;
 			await user.save();
-
 			return res.status(200).json({
 				success: true,
 				message: "User is on free plan",
@@ -153,25 +149,35 @@ export const syncSubscription = async (req, res) => {
 			});
 		}
 
-		// For paid plans, verify the subscription is valid and belongs to this user
-		// Check if this subscription was already assigned to a different user
-		const existingSubscriptionUser = await User.findOne({
-			"subscription.revenueCatId": revenueCatId,
-			_id: { $ne: user._id },
-		});
+		// For paid plans: Check if this transaction already belongs to someone else
+		let existingSubscription = null;
 
-		if (existingSubscriptionUser) {
-			console.error(
-				`Subscription ${revenueCatId} already belongs to user ${existingSubscriptionUser._id}`,
-			);
-			return res.status(403).json({
-				success: false,
-				error: "This subscription is already associated with another account",
-				requiresLogout: true, // Signal client to clear cached subscription data
+		if (originalTransactionId) {
+			// Search by originalTransactionId (most reliable)
+			existingSubscription = await User.findOne({
+				"subscription.originalTransactionId": originalTransactionId,
+				_id: { $ne: user._id },
+			});
+		} else if (revenueCatId && !revenueCatId.startsWith(user._id.toString())) {
+			// Only search by revenueCatId if it's not a fake ID
+			existingSubscription = await User.findOne({
+				"subscription.revenueCatId": revenueCatId,
+				_id: { $ne: user._id },
 			});
 		}
 
-		// Store the authenticated user's ID as the owner
+		if (existingSubscription) {
+			console.error(
+				`Subscription already belongs to user: ${existingSubscription._id}`,
+			);
+			return res.status(403).json({
+				success: false,
+				error: "This subscription belongs to another account",
+				code: "SUBSCRIPTION_OWNERSHIP_MISMATCH",
+			});
+		}
+
+		// Update or create subscription with REAL identifiers
 		user.subscription = {
 			plan,
 			status: "active",
@@ -180,9 +186,10 @@ export const syncSubscription = async (req, res) => {
 				? new Date(endDate)
 				: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
 			productId: productId || null,
-			revenueCatId: revenueCatId || null, // Don't default to user ID
-			originalTransactionId: originalTransactionId || null, // Store for verification
-			userId: req.user._id, // Explicitly store which user owns this
+			// NEVER default to user._id - only use real values
+			revenueCatId: revenueCatId || null,
+			originalTransactionId: originalTransactionId || null,
+			appUserId: appUserId || null, // Store RevenueCat's app_user_id
 		};
 
 		await user.save();
@@ -195,5 +202,59 @@ export const syncSubscription = async (req, res) => {
 	} catch (err) {
 		console.error("Sync Subscription Error:", err.message);
 		return res.status(500).json({ error: err.message });
+	}
+};
+
+// Link RevenueCat App User ID to current user
+export const linkRevenueCatId = async (req, res) => {
+	try {
+		const { revenueCatAppUserId } = req.body;
+
+		if (!revenueCatAppUserId) {
+			return res.status(400).json({ error: "revenueCatAppUserId is required" });
+		}
+
+		const { success, error, user } = await linkRevenueCatUser(
+			req.user._id,
+			revenueCatAppUserId,
+		);
+
+		if (!success) {
+			return res.status(400).json({ error });
+		}
+
+		res.json({
+			success: true,
+			message: "RevenueCat ID linked successfully",
+			subscription: user.subscription,
+		});
+	} catch (err) {
+		console.error("Link RevenueCat ID error:", err);
+		res.status(500).json({ error: err.message });
+	}
+};
+
+// Force sync subscription for current user
+export const forceSyncSubscription = async (req, res) => {
+	try {
+		const success = await syncUserSubscription(req.user._id);
+
+		if (!success) {
+			return res.status(400).json({
+				error:
+					"Failed to sync subscription. User may not have RevenueCat ID linked.",
+			});
+		}
+
+		const user = await User.findById(req.user._id);
+
+		res.json({
+			success: true,
+			message: "Subscription synced successfully",
+			subscription: user.subscription,
+		});
+	} catch (err) {
+		console.error("Force sync error:", err);
+		res.status(500).json({ error: err.message });
 	}
 };

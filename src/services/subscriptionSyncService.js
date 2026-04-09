@@ -2,18 +2,14 @@
 import mongoose from "mongoose";
 import User from "../models/User.js";
 
-// Initialize RevenueCat with your API key
-// For backend, you need to use the REST API, not the SDK
-// The SDK is for mobile apps, not Node.js backend
-
-// Option 1: Use RevenueCat REST API directly
 const REVENUECAT_API_KEY = process.env.REVENUECAT_API_KEY;
 const REVENUECAT_API_URL = "https://api.revenuecat.com/v1";
 
-const fetchCustomerInfo = async (userId) => {
+// Fetch customer info using RevenueCat's App User ID
+const fetchCustomerInfo = async (revenueCatAppUserId) => {
 	try {
 		const response = await fetch(
-			`${REVENUECAT_API_URL}/subscribers/${userId}`,
+			`${REVENUECAT_API_URL}/subscribers/${revenueCatAppUserId}`,
 			{
 				method: "GET",
 				headers: {
@@ -35,16 +31,64 @@ const fetchCustomerInfo = async (userId) => {
 	}
 };
 
-// backend/services/subscriptionSyncService.js - Fix the sync logic
+// Update a user's subscription by their RevenueCat App User ID
+export const syncUserSubscriptionByRevenueCatId = async (
+	revenueCatAppUserId,
+	retries = 3,
+) => {
+	try {
+		console.log(
+			`🔄 Syncing subscription for RevenueCat user: ${revenueCatAppUserId}`,
+		);
+
+		// Find user by their RevenueCat App User ID
+		const user = await User.findOne({ revenueCatAppUserId });
+
+		if (!user) {
+			console.log(`No user found with RevenueCat ID: ${revenueCatAppUserId}`);
+			return false;
+		}
+
+		return await syncUserSubscription(user._id, retries);
+	} catch (err) {
+		console.error(
+			`Sync error for RevenueCat user ${revenueCatAppUserId}:`,
+			err.message,
+		);
+		return false;
+	}
+};
+
+// Fix: Sync subscription using MongoDB _id, but fetch from RevenueCat using stored revenueCatAppUserId
 export const syncUserSubscription = async (userId, retries = 3) => {
 	try {
 		console.log(`🔄 Syncing subscription for user: ${userId}`);
 
-		// Fetch customer info from RevenueCat API
-		const subscriber = await fetchCustomerInfo(userId);
+		// Get user from database
+		const user = await User.findById(userId);
+		if (!user) {
+			console.log(`User not found: ${userId}`);
+			return false;
+		}
 
-		// Check entitlements
+		// CRITICAL: Use the stored RevenueCat App User ID, not the MongoDB _id
+		const revenueCatUserId = user.revenueCatAppUserId;
+
+		if (!revenueCatUserId) {
+			console.log(
+				`⚠️ User ${userId} has no RevenueCat App User ID set. Cannot sync.`,
+			);
+			// Don't fail - just keep current subscription
+			return false;
+		}
+
+		// Fetch customer info from RevenueCat using their actual App User ID
+		const subscriber = await fetchCustomerInfo(revenueCatUserId);
+
+		// Check entitlements - use YOUR actual entitlement IDs from RevenueCat
 		const entitlements = subscriber.entitlements || {};
+
+		// Replace these with your actual entitlement IDs
 		const hasBasic = entitlements["Kuditrak Basic"]?.is_active === true;
 		const hasPro = entitlements["Kuditrak Pro"]?.is_active === true;
 
@@ -52,6 +96,7 @@ export const syncUserSubscription = async (userId, retries = 3) => {
 		let status = "active";
 		let endDate = null;
 		let startDate = null;
+		let productId = null;
 
 		if (hasPro) {
 			plan = "pro";
@@ -62,6 +107,8 @@ export const syncUserSubscription = async (userId, retries = 3) => {
 			startDate = proEntitlement?.purchase_date
 				? new Date(proEntitlement.purchase_date)
 				: new Date();
+			productId = proEntitlement?.product_identifier || "pro";
+
 			// Check if expired
 			if (endDate && new Date() > endDate) {
 				status = "expired";
@@ -75,6 +122,8 @@ export const syncUserSubscription = async (userId, retries = 3) => {
 			startDate = basicEntitlement?.purchase_date
 				? new Date(basicEntitlement.purchase_date)
 				: new Date();
+			productId = basicEntitlement?.product_identifier || "basic";
+
 			// Check if expired
 			if (endDate && new Date() > endDate) {
 				status = "expired";
@@ -85,13 +134,7 @@ export const syncUserSubscription = async (userId, retries = 3) => {
 			status = "active";
 			endDate = null;
 			startDate = null;
-		}
-
-		// Find and update user
-		const user = await User.findById(userId);
-		if (!user) {
-			console.log(`User not found: ${userId}`);
-			return false;
+			productId = null;
 		}
 
 		// Update subscription with correct data
@@ -100,20 +143,21 @@ export const syncUserSubscription = async (userId, retries = 3) => {
 			status,
 			startDate,
 			endDate,
-			productId: hasPro ? "pro" : hasBasic ? "basic" : null,
-			revenueCatId: userId,
+			productId,
+			revenueCatId: revenueCatUserId, // Store the actual RevenueCat ID
 			lastSyncAt: new Date(),
 		};
 
 		await user.save();
 
 		console.log(
-			`✅ Subscription synced for user ${userId}: ${plan} (${status})`,
+			`✅ Subscription synced for user ${userId} (RevenueCat ID: ${revenueCatUserId}): ${plan} (${status})`,
 		);
 		return true;
 	} catch (err) {
 		console.error(`Sync error for user ${userId}:`, err.message);
 		if (retries > 0) {
+			console.log(`Retrying... (${retries} attempts left)`);
 			await new Promise((resolve) => setTimeout(resolve, 2000));
 			return syncUserSubscription(userId, retries - 1);
 		}
@@ -121,6 +165,7 @@ export const syncUserSubscription = async (userId, retries = 3) => {
 	}
 };
 
+// Sync all users who have revenueCatAppUserId set
 export const syncAllActiveSubscriptions = async () => {
 	try {
 		console.log("🔄 Starting bulk subscription sync...");
@@ -138,12 +183,13 @@ export const syncAllActiveSubscriptions = async () => {
 			return { synced: 0, failed: 0 };
 		}
 
-		// Find all users with active subscriptions in our DB
-		const users = await User.find({ "subscription.status": "active" }).limit(
-			50,
-		);
+		// Find all users with revenueCatAppUserId set
+		const users = await User.find({
+			revenueCatAppUserId: { $exists: true, $ne: null },
+			"subscription.status": "active",
+		}).limit(50);
 
-		console.log(`Found ${users.length} active subscriptions to sync`);
+		console.log(`Found ${users.length} users with RevenueCat IDs to sync`);
 
 		let synced = 0;
 		let failed = 0;
@@ -162,5 +208,41 @@ export const syncAllActiveSubscriptions = async () => {
 	} catch (err) {
 		console.error("Bulk sync error:", err);
 		return { synced: 0, failed: 0 };
+	}
+};
+
+// NEW: Link RevenueCat App User ID to existing user
+export const linkRevenueCatUser = async (userId, revenueCatAppUserId) => {
+	try {
+		// Check if this RevenueCat ID is already linked to another user
+		const existingUser = await User.findOne({ revenueCatAppUserId });
+
+		if (existingUser && existingUser._id.toString() !== userId.toString()) {
+			console.log(
+				`⚠️ RevenueCat ID ${revenueCatAppUserId} already linked to user ${existingUser._id}`,
+			);
+
+			// Option: Transfer subscription to new user
+			// Or reject the link
+			return {
+				success: false,
+				error: "RevenueCat ID already linked to another user",
+			};
+		}
+
+		// Update user with RevenueCat App User ID
+		const user = await User.findByIdAndUpdate(
+			userId,
+			{ revenueCatAppUserId },
+			{ new: true },
+		);
+
+		// Immediately sync subscription
+		await syncUserSubscription(userId);
+
+		return { success: true, user };
+	} catch (err) {
+		console.error("Error linking RevenueCat user:", err);
+		return { success: false, error: err.message };
 	}
 };
