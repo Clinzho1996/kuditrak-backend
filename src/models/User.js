@@ -124,7 +124,6 @@ const userSchema = new mongoose.Schema({
 
 	appleUserId: {
 		type: String,
-		unique: true,
 		sparse: true,
 		index: true,
 	},
