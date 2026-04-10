@@ -414,19 +414,25 @@ export const completeOnboarding = async (req, res) => {
 			});
 		}
 
+		// Update only fields that are provided, keep existing values for others
 		user.onboarding = {
 			...user.onboarding,
-			financialGoals: financialGoal,
-			incomeType,
-			incomeFrequency,
-			financialChallenges,
-			expenseTrackingHabit: trackingHabit,
+			financialGoals: financialGoal || user.onboarding?.financialGoals || [],
+			incomeType: incomeType || user.onboarding?.incomeType || "Not specified",
+			incomeFrequency:
+				incomeFrequency || user.onboarding?.incomeFrequency || "Not specified",
+			financialChallenges:
+				financialChallenges || user.onboarding?.financialChallenges || [],
+			expenseTrackingHabit:
+				trackingHabit ||
+				user.onboarding?.expenseTrackingHabit ||
+				"Not specified",
 		};
 
 		user.onboardingCompleted = true;
 		await user.save();
 
-		// Save optional bank connections
+		// Save optional bank connections (only if provided)
 		if (bankConnections && bankConnections.length > 0) {
 			const connections = bankConnections.map((b) => ({
 				userId: user._id,
@@ -438,9 +444,6 @@ export const completeOnboarding = async (req, res) => {
 				lastSync: null,
 			}));
 			await BankConnection.insertMany(connections);
-
-			// Update user's onboarding.connectedAccounts
-
 			user.onboarding.connectedAccounts = true;
 			await user.save();
 		}
@@ -491,17 +494,17 @@ export const login = async (req, res) => {
 		}
 
 		// Check if email is verified
-		if (!user.isVerified) {
-			return res.status(403).json({
-				success: false,
-				message:
-					"Please verify your email before logging in. A verification code was sent to your email.",
-				code: "EMAIL_NOT_VERIFIED",
-				email: user.email,
-				userId: user._id,
-				canResend: true,
-			});
-		}
+		// if (!user.isVerified) {
+		// 	return res.status(403).json({
+		// 		success: false,
+		// 		message:
+		// 			"Please verify your email before logging in. A verification code was sent to your email.",
+		// 		code: "EMAIL_NOT_VERIFIED",
+		// 		email: user.email,
+		// 		userId: user._id,
+		// 		canResend: true,
+		// 	});
+		// }
 
 		// Successful login
 		const token = generateToken(user._id);
