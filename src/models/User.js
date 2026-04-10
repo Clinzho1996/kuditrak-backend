@@ -47,11 +47,11 @@ const userSchema = new mongoose.Schema({
 
 	// Onboarding journey
 	onboarding: {
-		financialGoals: [String],
-		incomeType: String,
-		incomeFrequency: String,
-		financialChallenges: [String],
-		expenseTrackingHabit: String,
+		financialGoals: { type: [String], default: [] },
+		incomeType: { type: String, default: "Not specified" },
+		incomeFrequency: { type: String, default: "Not specified" },
+		financialChallenges: { type: [String], default: [] },
+		expenseTrackingHabit: { type: String, default: "Not specified" },
 		connectedAccounts: { type: Boolean, default: false },
 	},
 	onboardingCompleted: {
