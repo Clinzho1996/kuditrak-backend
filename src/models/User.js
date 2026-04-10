@@ -73,7 +73,7 @@ const userSchema = new mongoose.Schema({
 		type: [
 			{
 				token: { type: String, required: true },
-				platform: { type: String, enum: ["ios", "android"], required: true },
+				platform: { type: String, enum: ["ios", "android"], required: false },
 				deviceId: { type: mongoose.Schema.Types.Mixed, default: null },
 				lastUsed: { type: Date, default: Date.now },
 				createdAt: { type: Date, default: Date.now },
