@@ -98,7 +98,7 @@ const userSchema = new mongoose.Schema({
 
 	revenueCatAppUserId: {
 		type: String,
-		default: null,
+		default: undefined,
 		unique: true,
 		sparse: true,
 		index: true,
