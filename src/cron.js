@@ -5,7 +5,10 @@ import Budget from "./models/Budget.js";
 import User from "./models/User.js";
 import { calculateUserInsights } from "./services/analyticsService.js";
 import { pullTransactionsFromMono } from "./services/monoService.js";
-import { sendBudgetNearingLimitNotification } from "./services/notificationService.js";
+import {
+	sendBudgetLimitReachedNotification,
+	sendBudgetNearingLimitNotification,
+} from "./services/notificationService.js";
 import { sendPush } from "./services/pushService.js";
 
 // cron.js - Add startup confirmation
