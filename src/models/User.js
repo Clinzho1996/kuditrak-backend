@@ -72,7 +72,7 @@ const userSchema = new mongoose.Schema({
 	pushTokens: {
 		type: [
 			{
-				token: { type: String, required: true },
+				token: { type: String, required: false },
 				platform: { type: String, enum: ["ios", "android"], required: false },
 				deviceId: { type: mongoose.Schema.Types.Mixed, default: null },
 				lastUsed: { type: Date, default: Date.now },
