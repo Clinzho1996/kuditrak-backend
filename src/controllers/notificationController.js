@@ -127,7 +127,6 @@ export const deleteNotification = async (req, res) => {
 	}
 };
 
-// backend/controllers/notificationController.js
 // ===============================
 // REGISTER PUSH TOKEN
 // ===============================
@@ -138,8 +137,19 @@ export const registerPushToken = async (req, res) => {
 
 		console.log("Registering push token:", { token, platform, deviceId });
 
-		if (!token || !platform) {
-			return res.status(400).json({ error: "Token and platform are required" });
+		// VALIDATION: Ensure required fields
+		if (!token) {
+			return res.status(400).json({ error: "Token is required" });
+		}
+
+		if (!platform) {
+			return res.status(400).json({ error: "Platform is required" });
+		}
+
+		// Validate token format
+		if (!token.startsWith("ExponentPushToken")) {
+			console.warn("Invalid token format:", token);
+			return res.status(400).json({ error: "Invalid Expo push token format" });
 		}
 
 		const user = await User.findById(userId);
@@ -148,13 +158,33 @@ export const registerPushToken = async (req, res) => {
 			return res.status(404).json({ error: "User not found" });
 		}
 
-		// Handle deviceId if it's an object (from Expo)
+		// Initialize pushTokens array if it doesn't exist
+		if (!user.pushTokens) {
+			user.pushTokens = [];
+		}
+
+		// CLEANUP: Remove any malformed entries for this user
+		const originalCount = user.pushTokens.length;
+		user.pushTokens = user.pushTokens.filter(
+			(t) =>
+				t &&
+				t.token &&
+				typeof t.token === "string" &&
+				t.token.startsWith("ExponentPushToken") &&
+				t.platform,
+		);
+
+		if (originalCount !== user.pushTokens.length) {
+			console.log(
+				`🧹 Cleaned up ${originalCount - user.pushTokens.length} malformed tokens`,
+			);
+		}
+
+		// Handle deviceId (ensure it's a string)
 		let deviceIdString = null;
 		if (deviceId) {
-			// If deviceId is an object with data property (Expo format)
 			if (typeof deviceId === "object") {
-				deviceIdString =
-					deviceId.data || deviceId.token || JSON.stringify(deviceId);
+				deviceIdString = deviceId.data || deviceId.token || null;
 			} else if (typeof deviceId === "string") {
 				deviceIdString = deviceId;
 			} else {
@@ -162,32 +192,28 @@ export const registerPushToken = async (req, res) => {
 			}
 		}
 
-		// Initialize pushTokens array if it doesn't exist
-		if (!user.pushTokens) {
-			user.pushTokens = [];
-		}
-
-		// Clean up any existing entries with invalid deviceId
-		user.pushTokens = user.pushTokens.filter(
-			(t) => t.token && typeof t.token === "string",
-		);
-
 		// Check if token already exists
 		const existingTokenIndex = user.pushTokens.findIndex(
 			(t) => t.token === token,
 		);
 
 		if (existingTokenIndex !== -1) {
-			// Update existing token
-			user.pushTokens[existingTokenIndex].lastUsed = new Date();
-			user.pushTokens[existingTokenIndex].platform = platform;
-			if (deviceIdString)
-				user.pushTokens[existingTokenIndex].deviceId = deviceIdString;
+			// Update existing token - preserve all fields
+			user.pushTokens[existingTokenIndex] = {
+				...user.pushTokens[existingTokenIndex],
+				token: token,
+				platform: platform,
+				deviceId:
+					deviceIdString || user.pushTokens[existingTokenIndex].deviceId,
+				lastUsed: new Date(),
+				// Preserve original createdAt if it exists
+				createdAt: user.pushTokens[existingTokenIndex].createdAt || new Date(),
+			};
 		} else {
-			// Add new token
+			// Add new token with ALL required fields
 			user.pushTokens.push({
-				token,
-				platform,
+				token: token,
+				platform: platform,
 				deviceId: deviceIdString,
 				createdAt: new Date(),
 				lastUsed: new Date(),
@@ -196,9 +222,16 @@ export const registerPushToken = async (req, res) => {
 
 		await user.save();
 
+		console.log(
+			`✅ Push token registered for user ${userId}, total tokens: ${user.pushTokens.length}`,
+		);
+
 		res.status(200).json({
 			success: true,
 			message: "Push token registered successfully",
+			data: {
+				tokenCount: user.pushTokens.length,
+			},
 		});
 	} catch (err) {
 		console.error("Register push token error:", err);
@@ -239,6 +272,54 @@ export const unregisterPushToken = async (req, res) => {
 		});
 	} catch (err) {
 		console.error("Unregister push token error:", err);
+		res.status(500).json({ error: err.message });
+	}
+};
+
+// ===============================
+// CLEANUP INVALID PUSH TOKENS (Admin)
+// ===============================
+export const cleanupInvalidPushTokens = async (req, res) => {
+	try {
+		const userId = req.user._id;
+
+		// If admin or self cleanup
+		const query = userId ? { _id: userId } : {};
+
+		const users = await User.find(query);
+		let totalCleaned = 0;
+
+		for (const user of users) {
+			if (!user.pushTokens || user.pushTokens.length === 0) continue;
+
+			const originalCount = user.pushTokens.length;
+
+			// Filter out malformed tokens
+			user.pushTokens = user.pushTokens.filter(
+				(token) =>
+					token &&
+					token.token &&
+					typeof token.token === "string" &&
+					token.token.startsWith("ExponentPushToken") &&
+					token.platform &&
+					(token.createdAt || token.lastUsed), // Must have at least one date
+			);
+
+			const cleaned = originalCount - user.pushTokens.length;
+			if (cleaned > 0) {
+				totalCleaned += cleaned;
+				await user.save();
+				console.log(`🧹 Cleaned ${cleaned} tokens for user ${user._id}`);
+			}
+		}
+
+		res.status(200).json({
+			success: true,
+			message: `Cleaned up ${totalCleaned} invalid push tokens`,
+			totalCleaned,
+		});
+	} catch (err) {
+		console.error("Cleanup push tokens error:", err);
 		res.status(500).json({ error: err.message });
 	}
 };

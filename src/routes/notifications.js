@@ -1,6 +1,7 @@
 // backend/routes/notificationRoutes.js
 import express from "express";
 import {
+	cleanupInvalidPushTokens,
 	deleteNotification,
 	getNotifications,
 	getNotificationSettings,
@@ -24,6 +25,7 @@ router.put("/:id/read", markAsRead);
 router.delete("/:id", deleteNotification);
 router.post("/push-token", registerPushToken);
 router.delete("/push-token", unregisterPushToken);
+router.delete("/push-token/cleanup", cleanupInvalidPushTokens);
 router.get("/settings", getNotificationSettings);
 router.put("/settings", updateNotificationSettings);
 
