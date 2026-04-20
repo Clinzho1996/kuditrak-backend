@@ -203,15 +203,10 @@ export const handleDvaWebhook = async (req, res) => {
 	}
 };
 
-// ================= Standard Card Payment Methods =================
-
 export const topUpWallet = async (req, res) => {
 	try {
 		const { amount } = req.body;
 		const userId = req.user._id;
-
-		// Calculate your app's processing fee (0.5% like DVA)
-		const processingFee = Math.floor(amount * 0.005);
 
 		// Calculate Paystack fee (1.5% + ₦100, capped at ₦2,000)
 		const calculatePaystackFee = (amt) => {
@@ -241,7 +236,6 @@ export const topUpWallet = async (req, res) => {
 			transactionId: reference,
 			type: "income",
 			amount: amount,
-			processingFee: processingFee, // Store the processing fee
 			paystackFee: paystackFee,
 			totalCharged: totalToCharge,
 			source: "card",
@@ -249,13 +243,7 @@ export const topUpWallet = async (req, res) => {
 			description: "Wallet Top Up (Card)",
 		});
 
-		res.json({
-			paymentLink,
-			reference,
-			fee: paystackFee,
-			totalToCharge,
-			processingFee,
-		});
+		res.json({ paymentLink, reference, fee: paystackFee, totalToCharge });
 	} catch (err) {
 		console.error("Topup error:", err);
 		res.status(500).json({ error: err.message });
@@ -307,11 +295,10 @@ export const verifyWalletTopUp = async (req, res) => {
 			);
 		}
 
-		const amount = transaction.amount; // This is the amount user receives
-		const processingFee =
-			transaction.processingFee || Math.floor(amount * 0.005);
+		const amount = transaction.amount; // This is the amount user receives (₦500)
+		const paystackFee = transaction.paystackFee; // This is the Paystack fee (₦107.50)
 
-		// Get or create platform wallet
+		// Get or create platform wallet (system bucket)
 		let platformWallet = await Wallet.findOne({
 			userId: process.env.SYSTEM_BUCKET_ID,
 		});
@@ -326,14 +313,18 @@ export const verifyWalletTopUp = async (req, res) => {
 			});
 		}
 
-		// Add processing fee to platform wallet
-		if (processingFee > 0) {
-			platformWallet.balance += processingFee;
-			platformWallet.available += processingFee;
+		// Send the ENTIRE Paystack fee to system bucket
+		if (paystackFee > 0) {
+			platformWallet.balance += paystackFee;
+			platformWallet.available += paystackFee;
 			await platformWallet.save();
+
+			console.log(
+				`💰 Platform wallet received full Paystack fee: ₦${paystackFee}`,
+			);
 		}
 
-		// Credit user's wallet with the amount (no fee deducted since fee is separate)
+		// Credit user's wallet with the full amount (no deduction)
 		wallet.balance += amount;
 		wallet.available += amount;
 		await wallet.save();
@@ -341,21 +332,22 @@ export const verifyWalletTopUp = async (req, res) => {
 		transaction.status = "Completed";
 		await transaction.save();
 
-		// Create platform revenue transaction record
-		if (processingFee > 0) {
+		// Create platform revenue transaction record for the Paystack fee
+		if (paystackFee > 0) {
 			await Transaction.create({
 				walletId: platformWallet._id,
 				userId: process.env.SYSTEM_BUCKET_ID,
 				transactionId: `PLATFORM-CARD-FEE-${reference}`,
 				type: "income",
-				amount: processingFee,
+				amount: paystackFee,
 				status: "Completed",
-				description: `Processing fee from card top-up by user ${transaction.userId}`,
+				description: `Paystack fee from card top-up by user ${transaction.userId}`,
 				source: "platform",
 				metadata: {
 					userId: transaction.userId,
 					originalTopUpAmount: amount,
-					processingFee: processingFee,
+					paystackFee: paystackFee,
+					totalUserPaid: transaction.totalCharged,
 					cardReference: reference,
 				},
 			});
@@ -364,7 +356,7 @@ export const verifyWalletTopUp = async (req, res) => {
 		console.log(
 			`✅ Wallet funded: +₦${amount}, New balance: ₦${wallet.balance}`,
 		);
-		console.log(`💰 Platform wallet: +₦${processingFee} (processing fee)`);
+		console.log(`💰 Platform wallet balance: ₦${platformWallet.balance}`);
 
 		try {
 			await sendTopUpNotification(transaction.userId, amount, wallet.balance);
