@@ -210,6 +210,9 @@ export const topUpWallet = async (req, res) => {
 		const { amount } = req.body;
 		const userId = req.user._id;
 
+		// Calculate your app's processing fee (0.5% like DVA)
+		const processingFee = Math.floor(amount * 0.005);
+
 		// Calculate Paystack fee (1.5% + ₦100, capped at ₦2,000)
 		const calculatePaystackFee = (amt) => {
 			const percentage = amt * 0.015;
@@ -238,6 +241,7 @@ export const topUpWallet = async (req, res) => {
 			transactionId: reference,
 			type: "income",
 			amount: amount,
+			processingFee: processingFee, // Store the processing fee
 			paystackFee: paystackFee,
 			totalCharged: totalToCharge,
 			source: "card",
@@ -245,7 +249,13 @@ export const topUpWallet = async (req, res) => {
 			description: "Wallet Top Up (Card)",
 		});
 
-		res.json({ paymentLink, reference, fee: paystackFee, totalToCharge });
+		res.json({
+			paymentLink,
+			reference,
+			fee: paystackFee,
+			totalToCharge,
+			processingFee,
+		});
 	} catch (err) {
 		console.error("Topup error:", err);
 		res.status(500).json({ error: err.message });
@@ -298,7 +308,32 @@ export const verifyWalletTopUp = async (req, res) => {
 		}
 
 		const amount = transaction.amount; // This is the amount user receives
+		const processingFee =
+			transaction.processingFee || Math.floor(amount * 0.005);
 
+		// Get or create platform wallet
+		let platformWallet = await Wallet.findOne({
+			userId: process.env.SYSTEM_BUCKET_ID,
+		});
+
+		if (!platformWallet) {
+			platformWallet = await Wallet.create({
+				userId: process.env.SYSTEM_BUCKET_ID,
+				balance: 0,
+				available: 0,
+				allocated: 0,
+				currency: "NGN",
+			});
+		}
+
+		// Add processing fee to platform wallet
+		if (processingFee > 0) {
+			platformWallet.balance += processingFee;
+			platformWallet.available += processingFee;
+			await platformWallet.save();
+		}
+
+		// Credit user's wallet with the amount (no fee deducted since fee is separate)
 		wallet.balance += amount;
 		wallet.available += amount;
 		await wallet.save();
@@ -306,9 +341,30 @@ export const verifyWalletTopUp = async (req, res) => {
 		transaction.status = "Completed";
 		await transaction.save();
 
+		// Create platform revenue transaction record
+		if (processingFee > 0) {
+			await Transaction.create({
+				walletId: platformWallet._id,
+				userId: process.env.SYSTEM_BUCKET_ID,
+				transactionId: `PLATFORM-CARD-FEE-${reference}`,
+				type: "income",
+				amount: processingFee,
+				status: "Completed",
+				description: `Processing fee from card top-up by user ${transaction.userId}`,
+				source: "platform",
+				metadata: {
+					userId: transaction.userId,
+					originalTopUpAmount: amount,
+					processingFee: processingFee,
+					cardReference: reference,
+				},
+			});
+		}
+
 		console.log(
 			`✅ Wallet funded: +₦${amount}, New balance: ₦${wallet.balance}`,
 		);
+		console.log(`💰 Platform wallet: +₦${processingFee} (processing fee)`);
 
 		try {
 			await sendTopUpNotification(transaction.userId, amount, wallet.balance);
