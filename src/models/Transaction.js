@@ -33,6 +33,7 @@ const transactionSchema = new mongoose.Schema({
 			"penalty",
 			"card",
 			"virtual_account",
+			"platform",
 		],
 		default: "manual",
 	},
