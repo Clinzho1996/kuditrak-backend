@@ -12,9 +12,18 @@ let serviceAccount;
 // PRODUCTION (Render)
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
 	try {
-		serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+		const rawJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+		serviceAccount = JSON.parse(rawJson);
+
+		// CRITICAL: Ensure the private key handles newlines correctly
+		if (serviceAccount.private_key) {
+			serviceAccount.private_key = serviceAccount.private_key.replace(
+				/\\n/g,
+				"\n",
+			);
+		}
 	} catch (err) {
-		console.error("Invalid FIREBASE_SERVICE_ACCOUNT JSON");
+		console.error("🔥 Error parsing FIREBASE_SERVICE_ACCOUNT:", err.message);
 	}
 }
 
