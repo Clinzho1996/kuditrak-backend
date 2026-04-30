@@ -3,7 +3,7 @@ import axios from "axios";
 
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET;
 const BACKEND_URL =
-	process.env.BACKEND_URL || "https://kuditrak-backend.onrender.com";
+	process.env.BACKEND_URL || "https://kuditrak-backend-tgr4.onrender.com";
 
 // Configuration for charges
 const CHARGES_CONFIG = {
@@ -22,7 +22,6 @@ const calculateTopUpCharges = (amount) => {
 		amountToCharge: amount,
 	};
 };
-
 
 export const createTopUp = async ({ email, amount, reference, userId }) => {
 	try {
