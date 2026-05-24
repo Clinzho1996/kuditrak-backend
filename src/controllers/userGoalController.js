@@ -3,6 +3,7 @@ import cron from "node-cron";
 import Transaction from "../models/Transaction.js";
 import UserGoal from "../models/UserGoal.js";
 import Wallet from "../models/Wallet.js";
+import AllocationRecord from "../models/AllocationRecord.js";
 import { sendGoalNotification } from "../services/notificationService.js";
 import { checkLimits } from "../services/subscriptionService.js";
 
