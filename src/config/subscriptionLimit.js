@@ -10,12 +10,12 @@ export const LIMITS = {
 		manualTransactions: 25,
 		bankConnections: 3,
 		budgets: 10,
-		savingBuckets: 10, // Added saving buckets limit
+		savingBuckets: 10,
 	},
 	pro: {
 		manualTransactions: Infinity,
 		bankConnections: Infinity,
 		budgets: Infinity,
-		savingBuckets: Infinity, // Added saving buckets limit
+		savingBuckets: Infinity,
 	},
 };

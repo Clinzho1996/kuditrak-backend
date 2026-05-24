@@ -178,6 +178,103 @@ export const sendTransactionNotification = async (
 	}
 };
 
+// Send goal notification (CBN-compliant version of sendSavingNotification)
+export const sendGoalNotification = async (
+	userId,
+	goalName,
+	allocatedAmount,
+	goalAmount,
+	action,
+) => {
+	try {
+		let template;
+		let body;
+		let extraData = {};
+
+		if (action === "created") {
+			template = {
+				title: "🎯 New Goal Created",
+				body: "You created '{goalName}' goal. Target: ₦{goalAmount}",
+				type: "goal_created",
+			};
+			body = formatNotification(template, {
+				goalName,
+				goalAmount: goalAmount.toLocaleString(),
+			});
+			extraData = { goalName, action: "created" };
+		} else if (action === "deleted") {
+			template = {
+				title: "🗑️ Goal Removed",
+				body: "Your '{goalName}' goal has been removed. Designated funds are back in your wallet.",
+				type: "goal_deleted",
+			};
+			body = formatNotification(template, { goalName });
+			extraData = { goalName, action: "deleted" };
+		} else if (action === "completed") {
+			template = {
+				title: "🎉 Goal Achieved!",
+				body: "Congratulations! You've reached your '{goalName}' goal of ₦{goalAmount}!",
+				type: "goal_completed",
+			};
+			body = formatNotification(template, {
+				goalName,
+				goalAmount: goalAmount.toLocaleString(),
+			});
+			extraData = { goalName, action: "completed" };
+		} else if (action === "committed") {
+			template = {
+				title: "🔒 Goal Commitment Activated",
+				body: "You've committed to your '{goalName}' goal until {releaseDate}. Early release incurs a 7% fee.",
+				type: "goal_committed",
+			};
+			body = formatNotification(template, {
+				goalName,
+				releaseDate: extraData.releaseDate || "the specified date",
+			});
+			extraData = { goalName, action: "committed" };
+		} else if (action === "released") {
+			template = {
+				title: "🔓 Goal Commitment Released",
+				body: "Your '{goalName}' goal commitment has ended. You can now withdraw designated funds without penalty.",
+				type: "goal_released",
+			};
+			body = formatNotification(template, { goalName });
+			extraData = { goalName, action: "released" };
+		} else {
+			const progress = Math.round((allocatedAmount / goalAmount) * 100);
+			template = {
+				title: "📈 Goal Progress Updated",
+				body: "Your '{goalName}' goal is at {progress}% (₦{allocatedAmount} / ₦{goalAmount})",
+				type: "goal_updated",
+			};
+			body = formatNotification(template, {
+				goalName,
+				progress,
+				allocatedAmount: allocatedAmount.toLocaleString(),
+				goalAmount: goalAmount.toLocaleString(),
+			});
+			extraData = {
+				goalName,
+				action: "updated",
+				progress: progress.toString(),
+			};
+		}
+
+		console.log(`Sending goal notification (${action}) to ${userId}`);
+
+		const result = await sendPushToUser(userId, template.title, body, {
+			type: template.type,
+			...extraData,
+		});
+
+		console.log("Goal notification result:", result);
+		return result;
+	} catch (error) {
+		console.error("Error sending goal notification:", error);
+		throw error;
+	}
+};
+
 // Send saving goal notification
 export const sendSavingNotification = async (
 	userId,
