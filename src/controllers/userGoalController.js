@@ -1,9 +1,9 @@
 // controllers/userGoalController.js
 import cron from "node-cron";
+import AllocationRecord from "../models/AllocationRecord.js";
 import Transaction from "../models/Transaction.js";
 import UserGoal from "../models/UserGoal.js";
 import Wallet from "../models/Wallet.js";
-import AllocationRecord from "../models/AllocationRecord.js";
 import { sendGoalNotification } from "../services/notificationService.js";
 import { checkLimits } from "../services/subscriptionService.js";
 
@@ -260,15 +260,15 @@ const scheduleAutoAllocation = (goalId, userId, frequency, amount) => {
 			const wallet = await Wallet.findOne({ userId: userId });
 			if (!wallet || wallet.balance < amount) return;
 
-			// This is just a designation, not a transfer
+			// Use 'allocated' not 'designatedFunds'
 			wallet.balance -= amount;
-			wallet.designatedFunds = (wallet.designatedFunds || 0) + amount;
+			wallet.allocated = (wallet.allocated || 0) + amount;
+			wallet.available = wallet.balance - wallet.allocated;
 			await wallet.save();
 
 			goal.allocatedAmount += amount;
 			await goal.save();
 
-			// Create trace record (not a transaction, just a record)
 			await AllocationRecord.create({
 				goalId: goal._id,
 				userId: userId,
@@ -498,6 +498,8 @@ export const releaseFromCommitment = async (req, res) => {
 };
 
 // Allocate funds to goal (manual deposit)
+// controllers/userGoalController.js - Fixed allocateToGoal
+
 export const allocateToGoal = async (req, res) => {
 	try {
 		const { id } = req.params;
@@ -515,7 +517,7 @@ export const allocateToGoal = async (req, res) => {
 
 		if (goal.isCommitted) {
 			return res.status(403).json({
-				error: `You've committed to this goal until ${goal.commitmentSettings.releaseDate.toLocaleDateString()}. You can still allocate funds, but early release penalties apply.`,
+				error: `You've committed to this goal until ${goal.commitmentSettings.releaseDate.toLocaleDateString()}. You can still allocate funds, but early withdrawal penalties apply.`,
 				commitmentActive: true,
 			});
 		}
@@ -536,10 +538,13 @@ export const allocateToGoal = async (req, res) => {
 			});
 		}
 
+		// Update wallet - use 'allocated' not 'designatedFunds'
 		wallet.balance -= amount;
-		wallet.designatedFunds = (wallet.designatedFunds || 0) + amount;
+		wallet.allocated = (wallet.allocated || 0) + amount;
+		wallet.available = wallet.balance - wallet.allocated;
 		await wallet.save();
 
+		// Update goal allocated amount
 		goal.allocatedAmount += amount;
 		await goal.save();
 
@@ -553,16 +558,23 @@ export const allocateToGoal = async (req, res) => {
 			isCompleted ? "completed" : "updated",
 		);
 
-		await AllocationRecord.create({
-			goalId: goal._id,
-			userId: req.user._id,
-			amount: amount,
-			type: "manual_allocation",
-			timestamp: new Date(),
-		});
+		// Create allocation record
+		try {
+			await AllocationRecord.create({
+				goalId: goal._id,
+				userId: req.user._id,
+				amount: amount,
+				type: "manual_allocation",
+				timestamp: new Date(),
+			});
+		} catch (recordError) {
+			console.error("Failed to create allocation record:", recordError);
+		}
 
 		const updatedWallet = await Wallet.findOne({ userId: req.user._id });
+		updatedWallet.available = updatedWallet.balance - updatedWallet.allocated;
 
+		// Stop auto-allocation if goal is completed
 		if (
 			goal.allocatedAmount >= goal.goalAmount &&
 			scheduledJobs.has(goal._id)
@@ -577,8 +589,8 @@ export const allocateToGoal = async (req, res) => {
 			wallet: {
 				_id: updatedWallet._id,
 				balance: updatedWallet.balance,
-				designatedFunds: updatedWallet.designatedFunds || 0,
-				available: updatedWallet.balance - (updatedWallet.designatedFunds || 0),
+				allocated: updatedWallet.allocated || 0,
+				available: updatedWallet.available,
 			},
 			message:
 				"Funds allocated successfully. These funds remain in your wallet but are designated for this goal.",
@@ -591,6 +603,8 @@ export const allocateToGoal = async (req, res) => {
 };
 
 // Withdraw designated funds (formerly "withdrawFromBucket")
+// controllers/userGoalController.js - Fixed withdrawDesignatedFunds
+
 export const withdrawDesignatedFunds = async (req, res) => {
 	try {
 		const { id } = req.params;
@@ -610,11 +624,13 @@ export const withdrawDesignatedFunds = async (req, res) => {
 			return res.status(400).json({ error: "Insufficient designated funds" });
 		}
 
+		// Get user's wallet
 		let wallet = await Wallet.findOne({ userId: req.user._id });
 		if (!wallet) {
 			return res.status(404).json({ error: "Wallet not found" });
 		}
 
+		// Get or create platform wallet
 		let platformWallet = await Wallet.findOne({
 			userId: process.env.SYSTEM_GOAL_ID,
 		});
@@ -622,10 +638,14 @@ export const withdrawDesignatedFunds = async (req, res) => {
 			platformWallet = await Wallet.create({
 				userId: process.env.SYSTEM_GOAL_ID,
 				balance: 0,
+				allocated: 0,
 				available: 0,
-				designatedFunds: 0,
 				currency: "NGN",
 			});
+			console.log(
+				"Platform wallet created with ID:",
+				process.env.SYSTEM_GOAL_ID,
+			);
 		}
 
 		let penaltyFee = 0;
@@ -651,21 +671,25 @@ export const withdrawDesignatedFunds = async (req, res) => {
 			});
 		}
 
+		// Deduct from goal
 		goal.allocatedAmount -= totalDeduction;
 		await goal.save();
 
+		// Update wallet - use 'allocated' not 'designatedFunds'
 		wallet.balance += amount;
-		wallet.designatedFunds = Math.max(
-			0,
-			(wallet.designatedFunds || 0) - totalDeduction,
-		);
+		wallet.allocated = Math.max(0, (wallet.allocated || 0) - totalDeduction);
+		wallet.available = wallet.balance - wallet.allocated;
 		await wallet.save();
 
+		// Add penalty to platform wallet
 		if (penaltyFee > 0) {
 			platformWallet.balance += penaltyFee;
+			platformWallet.available =
+				platformWallet.balance - platformWallet.allocated;
 			await platformWallet.save();
 		}
 
+		// Create transaction record for withdrawal
 		await Transaction.create({
 			walletId: wallet._id,
 			userId: req.user._id,
@@ -684,6 +708,7 @@ export const withdrawDesignatedFunds = async (req, res) => {
 			},
 		});
 
+		// Create transaction record for penalty if applicable
 		if (penaltyFee > 0) {
 			await Transaction.create({
 				walletId: platformWallet._id,
@@ -704,7 +729,9 @@ export const withdrawDesignatedFunds = async (req, res) => {
 			});
 		}
 
+		// Get updated wallet with correct available balance
 		const updatedWallet = await Wallet.findOne({ userId: req.user._id });
+		updatedWallet.available = updatedWallet.balance - updatedWallet.allocated;
 
 		res.status(200).json({
 			success: true,
@@ -713,8 +740,8 @@ export const withdrawDesignatedFunds = async (req, res) => {
 			wallet: {
 				_id: updatedWallet._id,
 				balance: updatedWallet.balance,
-				designatedFunds: updatedWallet.designatedFunds || 0,
-				available: updatedWallet.balance - (updatedWallet.designatedFunds || 0),
+				allocated: updatedWallet.allocated || 0,
+				available: updatedWallet.available,
 			},
 			withdrawAmount: amount,
 			penaltyApplied: penaltyFee,
