@@ -34,6 +34,8 @@ const transactionSchema = new mongoose.Schema({
 			"card",
 			"virtual_account",
 			"platform",
+			"goal_allocation",
+			"goal_withdrawal",
 		],
 		default: "manual",
 	},
