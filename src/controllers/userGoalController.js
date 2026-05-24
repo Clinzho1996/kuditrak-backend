@@ -602,8 +602,6 @@ export const allocateToGoal = async (req, res) => {
 	}
 };
 
-// Withdraw designated funds (formerly "withdrawFromBucket")
-// controllers/userGoalController.js - Fixed withdrawDesignatedFunds
 
 export const withdrawDesignatedFunds = async (req, res) => {
 	try {
@@ -630,22 +628,26 @@ export const withdrawDesignatedFunds = async (req, res) => {
 			return res.status(404).json({ error: "Wallet not found" });
 		}
 
-		// Get or create platform wallet
-		let platformWallet = await Wallet.findOne({
-			userId: process.env.SYSTEM_GOAL_ID,
-		});
-		if (!platformWallet) {
-			platformWallet = await Wallet.create({
-				userId: process.env.SYSTEM_GOAL_ID,
-				balance: 0,
-				allocated: 0,
-				available: 0,
-				currency: "NGN",
-			});
-			console.log(
-				"Platform wallet created with ID:",
-				process.env.SYSTEM_GOAL_ID,
-			);
+		// Get or create platform wallet using SYSTEM_BUCKET_ID from env
+		const platformWalletId = process.env.SYSTEM_BUCKET_ID;
+		if (!platformWalletId) {
+			console.error("SYSTEM_BUCKET_ID not set in environment variables");
+			// Continue without platform wallet - just log the penalty but don't collect it
+		}
+		
+		let platformWallet = null;
+		if (platformWalletId) {
+			platformWallet = await Wallet.findOne({ userId: platformWalletId });
+			if (!platformWallet) {
+				platformWallet = await Wallet.create({
+					userId: platformWalletId,
+					balance: 0,
+					allocated: 0,
+					available: 0,
+					currency: "NGN",
+				});
+				console.log("Platform wallet created with ID:", platformWalletId);
+			}
 		}
 
 		let penaltyFee = 0;
@@ -675,17 +677,16 @@ export const withdrawDesignatedFunds = async (req, res) => {
 		goal.allocatedAmount -= totalDeduction;
 		await goal.save();
 
-		// Update wallet - use 'allocated' not 'designatedFunds'
+		// Update wallet - use 'allocated' field
 		wallet.balance += amount;
 		wallet.allocated = Math.max(0, (wallet.allocated || 0) - totalDeduction);
 		wallet.available = wallet.balance - wallet.allocated;
 		await wallet.save();
 
-		// Add penalty to platform wallet
-		if (penaltyFee > 0) {
+		// Add penalty to platform wallet if applicable and platform wallet exists
+		if (penaltyFee > 0 && platformWallet) {
 			platformWallet.balance += penaltyFee;
-			platformWallet.available =
-				platformWallet.balance - platformWallet.allocated;
+			platformWallet.available = platformWallet.balance - platformWallet.allocated;
 			await platformWallet.save();
 		}
 
@@ -709,10 +710,10 @@ export const withdrawDesignatedFunds = async (req, res) => {
 		});
 
 		// Create transaction record for penalty if applicable
-		if (penaltyFee > 0) {
+		if (penaltyFee > 0 && platformWallet) {
 			await Transaction.create({
 				walletId: platformWallet._id,
-				userId: process.env.SYSTEM_GOAL_ID,
+				userId: platformWalletId,
 				transactionId: `PENALTY-${goal._id}-${Date.now()}`,
 				type: "income",
 				amount: penaltyFee,
