@@ -70,7 +70,7 @@ export const updateGoal = async (req, res) => {
 			return res.status(404).json({ error: "Goal not found" });
 		}
 
-		if (goalName) goal.name = name;
+		if (goal) goal.name = name;
 		if (goalAmount) goal.goalAmount = goalAmount;
 
 		if (
@@ -602,7 +602,6 @@ export const allocateToGoal = async (req, res) => {
 	}
 };
 
-
 export const withdrawDesignatedFunds = async (req, res) => {
 	try {
 		const { id } = req.params;
@@ -634,7 +633,7 @@ export const withdrawDesignatedFunds = async (req, res) => {
 			console.error("SYSTEM_BUCKET_ID not set in environment variables");
 			// Continue without platform wallet - just log the penalty but don't collect it
 		}
-		
+
 		let platformWallet = null;
 		if (platformWalletId) {
 			platformWallet = await Wallet.findOne({ userId: platformWalletId });
@@ -686,7 +685,8 @@ export const withdrawDesignatedFunds = async (req, res) => {
 		// Add penalty to platform wallet if applicable and platform wallet exists
 		if (penaltyFee > 0 && platformWallet) {
 			platformWallet.balance += penaltyFee;
-			platformWallet.available = platformWallet.balance - platformWallet.allocated;
+			platformWallet.available =
+				platformWallet.balance - platformWallet.allocated;
 			await platformWallet.save();
 		}
 
