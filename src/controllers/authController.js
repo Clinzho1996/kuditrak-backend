@@ -538,7 +538,7 @@ export const login = async (req, res) => {
 
 export const socialAuth = async (req, res) => {
 	try {
-		const { idToken, name, email, appleUserId } = req.body;
+		const { idToken, name, email, appleUserId, transferSub } = req.body;
 
 		if (!idToken) {
 			return res.status(400).json({
@@ -553,83 +553,245 @@ export const socialAuth = async (req, res) => {
 		const userEmail = email || firebaseEmail;
 		const authProvider = firebase.sign_in_provider || "apple.com";
 
+		// Extract transfer_sub from decoded token
+		const transferIdentifier = decoded.transfer_sub || transferSub;
+
 		console.log(`🔐 Social auth attempt:`, {
 			email: userEmail,
 			provider: authProvider,
 			firebaseUid: uid,
-			hasAppleId: !!appleUserId,
+			appleUserId: appleUserId,
+			hasTransferSub: !!transferIdentifier,
 		});
 
 		let user = null;
+		let needsUpdate = false;
 
-		// Strategy 1: Find by Firebase UID
-		user = await User.findOne({ firebaseUid: uid });
-		if (user) {
-			console.log(`✅ Found user by Firebase UID: ${user._id}`);
+		// ============================================================
+		// STRATEGY 1: Find by Firebase UID (Most reliable)
+		// ============================================================
+		if (uid) {
+			user = await User.findOne({ firebaseUid: uid });
+			if (user) {
+				console.log(
+					`✅ Found user by Firebase UID: ${user._id} (${user.provider})`,
+				);
+			}
 		}
 
-		// Strategy 2: Find by Apple User ID
-		if (!user && appleUserId) {
+		// ============================================================
+		// STRATEGY 2: Find by Apple User ID (Only for Apple providers)
+		// ============================================================
+		if (
+			!user &&
+			appleUserId &&
+			(authProvider === "apple.com" || authProvider === "apple")
+		) {
 			user = await User.findOne({ appleUserId: appleUserId });
 			if (user) {
 				console.log(`✅ Found user by Apple ID: ${user._id}`);
 			}
 		}
 
-		// Strategy 3: Find by email (for social providers)
-		if (!user && userEmail) {
+		// ============================================================
+		// STRATEGY 3: Handle App Transfer Migration
+		// Apple gives a transfer_sub in the ID token for 60 days
+		// ============================================================
+		if (!user && transferIdentifier) {
+			console.log(`🔄 Checking for transfer identifier: ${transferIdentifier}`);
+
+			// Check if we have this transfer identifier stored
 			user = await User.findOne({
-				email: userEmail,
-				provider: { $in: ["google", "apple", "google.com", "apple.com"] },
+				$or: [
+					{ transferIdentifier: transferIdentifier },
+					{ oldAppleUserId: transferIdentifier },
+				],
 			});
+
 			if (user) {
-				console.log(`✅ Found existing social user by email: ${user._id}`);
-				
-				// CRITICAL: Update appleUserId if it's different (migration scenario)
-				if (appleUserId && user.appleUserId !== appleUserId) {
-					console.log(`🔄 Updating Apple ID from ${user.appleUserId} to ${appleUserId}`);
+				console.log(`✅ Found user by transfer identifier: ${user._id}`);
+
+				// Update with new team-scoped identifiers
+				if (appleUserId) {
+					user.oldAppleUserId = user.appleUserId || transferIdentifier;
 					user.appleUserId = appleUserId;
-					await user.save();
-				}
-				
-				if (!user.firebaseUid && uid) {
-					user.firebaseUid = uid;
-					await user.save();
+					user.transferIdentifier = null; // Clear after migration
+					user.migrationCompleted = true;
+					user.migrationCompletedAt = new Date();
+					needsUpdate = true;
+					console.log(`🔄 Migrated user to new Apple ID: ${appleUserId}`);
 				}
 			}
 		}
 
-		// Strategy 4: Find by email for local users (handle migration)
+		// ============================================================
+		// STRATEGY 4: Find by email (Handle provider conflicts)
+		// ============================================================
+		if (!user && userEmail) {
+			const existingUser = await User.findOne({ email: userEmail });
+
+			if (existingUser) {
+				console.log(
+					`📧 Found user by email: ${existingUser._id}, provider: ${existingUser.provider}`,
+				);
+
+				// CASE 4a: Same provider or Apple/Google both social
+				const isSameProvider =
+					existingUser.provider === authProvider ||
+					(existingUser.provider === "google" &&
+						authProvider === "google.com") ||
+					(existingUser.provider === "apple" && authProvider === "apple.com");
+
+				if (isSameProvider) {
+					user = existingUser;
+					console.log(`✅ Same provider, using existing user`);
+				}
+
+				// CASE 4b: APPLE trying to sign in with GOOGLE user's email
+				else if (
+					(authProvider === "apple.com" || authProvider === "apple") &&
+					(existingUser.provider === "google.com" ||
+						existingUser.provider === "google")
+				) {
+					console.log(
+						`⚠️ Apple sign-in conflict with Google user for email: ${userEmail}`,
+					);
+
+					// Check if this Apple user actually owns this email
+					// If Apple is providing this email, it's legitimate
+					if (appleUserId) {
+						// Link Apple account to existing Google user
+						existingUser.oldAppleUserId =
+							existingUser.appleUserId || transferIdentifier;
+						existingUser.appleUserId = appleUserId;
+
+						if (transferIdentifier) {
+							existingUser.transferIdentifier = transferIdentifier;
+							existingUser.migrationCompleted = true;
+							existingUser.migrationCompletedAt = new Date();
+						}
+
+						// Update provider to "multi" or keep as google with apple linked
+						existingUser.provider = "multi";
+						existingUser.connectedProviders =
+							existingUser.connectedProviders || ["google.com"];
+						if (!existingUser.connectedProviders.includes("apple.com")) {
+							existingUser.connectedProviders.push("apple.com");
+						}
+
+						// Update Firebase UID if needed
+						if (!existingUser.firebaseUid && uid) {
+							existingUser.firebaseUid = uid;
+						}
+
+						await existingUser.save();
+						user = existingUser;
+						console.log(
+							`✅ Linked Apple account to existing Google user: ${user._id}`,
+						);
+					} else {
+						// No appleUserId, can't link
+						return res.status(409).json({
+							success: false,
+							message: `This email is already linked to a Google account. Please sign in with Google, or contact support to link your Apple account.`,
+							code: "PROVIDER_CONFLICT",
+							existingProvider: existingUser.provider,
+							requestedProvider: authProvider,
+							canMerge: true,
+						});
+					}
+				}
+
+				// CASE 4c: GOOGLE trying to sign in with APPLE user's email
+				else if (
+					(authProvider === "google.com" || authProvider === "google") &&
+					(existingUser.provider === "apple.com" ||
+						existingUser.provider === "apple")
+				) {
+					console.log(
+						`⚠️ Google sign-in conflict with Apple user for email: ${userEmail}`,
+					);
+
+					// Link Google account to existing Apple user
+					existingUser.provider = "multi";
+					existingUser.connectedProviders = existingUser.connectedProviders || [
+						"apple.com",
+					];
+					if (!existingUser.connectedProviders.includes("google.com")) {
+						existingUser.connectedProviders.push("google.com");
+					}
+
+					if (!existingUser.firebaseUid && uid) {
+						existingUser.firebaseUid = uid;
+					}
+
+					await existingUser.save();
+					user = existingUser;
+					console.log(
+						`✅ Linked Google account to existing Apple user: ${user._id}`,
+					);
+				}
+
+				// CASE 4d: Other provider conflicts
+				else {
+					console.log(
+						`⚠️ Provider conflict: ${existingUser.provider} vs ${authProvider}`,
+					);
+					return res.status(409).json({
+						success: false,
+						message: `This email is already linked to a ${existingUser.provider} account. Please sign in with ${existingUser.provider} or contact support.`,
+						code: "PROVIDER_CONFLICT",
+						existingProvider: existingUser.provider,
+						requestedProvider: authProvider,
+						canMerge: false,
+					});
+				}
+			}
+		}
+
+		// ============================================================
+		// STRATEGY 5: Check for local user migration
+		// ============================================================
 		if (!user && userEmail) {
 			const localUser = await User.findOne({
 				email: userEmail,
 				provider: "local",
 			});
-			
-			if (localUser) {
-				console.log(`⚠️ Found local user by email, considering for migration`);
-				
-				// Check if this might be an Apple Sign-In migration
-				if (authProvider === "apple.com" || authProvider === "apple") {
-					// Migrate local user to Apple Sign-In
-					localUser.provider = "apple.com";
-					localUser.firebaseUid = uid;
-					if (appleUserId) {
-						localUser.appleUserId = appleUserId;
+
+			if (
+				localUser &&
+				(authProvider === "apple.com" ||
+					authProvider === "apple" ||
+					authProvider === "google.com" ||
+					authProvider === "google")
+			) {
+				console.log(`⚠️ Found local user, migrating to ${authProvider}`);
+
+				localUser.provider = authProvider;
+				localUser.firebaseUid = uid;
+
+				if (appleUserId && authProvider === "apple.com") {
+					localUser.appleUserId = appleUserId;
+					if (transferIdentifier) {
+						localUser.transferIdentifier = transferIdentifier;
+						localUser.migrationCompleted = true;
 					}
-					localUser.isVerified = true;
-					await localUser.save();
-					user = localUser;
-					console.log(`✅ Migrated local user to Apple Sign-In: ${user._id}`);
 				}
+
+				localUser.isVerified = true;
+				await localUser.save();
+				user = localUser;
+				console.log(`✅ Migrated local user to ${authProvider}: ${user._id}`);
 			}
 		}
 
+		// ============================================================
 		// Create new user if not found
+		// ============================================================
 		if (!user) {
 			console.log(`🆕 Creating new ${authProvider} user...`);
 
-			// Check for email conflict with local user
+			// Check for email conflict one more time
 			const existingLocalUser = await User.findOne({
 				email: userEmail,
 				provider: "local",
@@ -655,21 +817,34 @@ export const socialAuth = async (req, res) => {
 					provider: authProvider,
 					isVerified: true,
 					onboardingCompleted: false,
+					migrationCompleted: false,
+					connectedProviders: [authProvider],
 				};
 
-				if (appleUserId) {
+				if (
+					appleUserId &&
+					(authProvider === "apple.com" || authProvider === "apple")
+				) {
 					userData.appleUserId = appleUserId;
+				}
+
+				if (transferIdentifier) {
+					userData.transferIdentifier = transferIdentifier;
+					userData.oldAppleUserId = transferIdentifier;
 				}
 
 				user = await User.create(userData);
 				await initializeDefaultCategories(user._id);
 				await Wallet.create({ userId: user._id });
 
-				console.log(`✅ New ${authProvider} user created: ${userName} (${finalEmail})`);
+				console.log(
+					`✅ New ${authProvider} user created: ${userName} (${finalEmail})`,
+				);
 			} catch (createError) {
 				if (createError.code === 11000) {
 					console.error(`❌ Duplicate key error:`, createError.keyPattern);
 
+					// Try to find by Firebase UID one more time
 					const retryUser = await User.findOne({ firebaseUid: uid });
 					if (retryUser) {
 						user = retryUser;
@@ -677,7 +852,8 @@ export const socialAuth = async (req, res) => {
 					} else {
 						return res.status(409).json({
 							success: false,
-							message: "Account already exists with different provider. Please sign in with your original method.",
+							message:
+								"Account already exists. Please sign in with your original method.",
 							code: "ACCOUNT_EXISTS",
 							details: createError.keyPattern,
 						});
@@ -688,29 +864,80 @@ export const socialAuth = async (req, res) => {
 			}
 		}
 
+		// ============================================================
 		// Update existing user
+		// ============================================================
 		if (user) {
-			let needsUpdate = false;
-
-			if ((user.fullName === "User" || !user.fullName) && name && name !== "User") {
+			// Update name if needed
+			if (
+				(user.fullName === "User" || !user.fullName) &&
+				name &&
+				name !== "User"
+			) {
 				user.fullName = name;
 				needsUpdate = true;
 			}
 
-			// Update appleUserId if provided and different
-			if (appleUserId && user.appleUserId !== appleUserId) {
-				user.appleUserId = appleUserId;
-				needsUpdate = true;
-				console.log(`🔗 Updating Apple ID to: ${appleUserId}`);
+			// Handle Apple ID update for app transfer
+			if (
+				appleUserId &&
+				(authProvider === "apple.com" || authProvider === "apple")
+			) {
+				if (!user.appleUserId) {
+					// First time setting Apple ID
+					user.appleUserId = appleUserId;
+					if (transferIdentifier) {
+						user.oldAppleUserId = transferIdentifier;
+						user.transferIdentifier = transferIdentifier;
+						user.migrationCompleted = true;
+						user.migrationCompletedAt = new Date();
+					}
+					needsUpdate = true;
+					console.log(`🔗 Linked Apple ID: ${appleUserId}`);
+				} else if (user.appleUserId !== appleUserId) {
+					// Apple ID changed (app transfer scenario)
+					console.log(
+						`🔄 Apple ID changed from ${user.appleUserId} to ${appleUserId}`,
+					);
+					user.oldAppleUserId = user.appleUserId;
+					user.appleUserId = appleUserId;
+					user.migrationCompleted = true;
+					user.migrationCompletedAt = new Date();
+					needsUpdate = true;
+				}
 			}
 
+			// Update transfer identifier if provided
+			if (transferIdentifier && !user.transferIdentifier) {
+				user.transferIdentifier = transferIdentifier;
+				user.oldAppleUserId = user.oldAppleUserId || transferIdentifier;
+				needsUpdate = true;
+			}
+
+			// Update Firebase UID if needed
 			if (!user.firebaseUid && uid) {
 				user.firebaseUid = uid;
 				needsUpdate = true;
 			}
 
+			// Track connected providers
+			if (!user.connectedProviders) {
+				user.connectedProviders = [user.provider];
+				needsUpdate = true;
+			}
+
+			if (authProvider && !user.connectedProviders.includes(authProvider)) {
+				user.connectedProviders.push(authProvider);
+				// If user has multiple providers, mark as "multi"
+				if (user.connectedProviders.length > 1) {
+					user.provider = "multi";
+				}
+				needsUpdate = true;
+			}
+
 			if (needsUpdate) {
 				await user.save();
+				console.log(`✅ User updated: ${user._id}`);
 			}
 
 			const token = generateToken(user._id);
@@ -722,6 +949,9 @@ export const socialAuth = async (req, res) => {
 				onboardingCompleted: user.onboardingCompleted,
 				profileImage: user.profileImage,
 				createdAt: user.createdAt,
+				provider: user.provider,
+				connectedProviders: user.connectedProviders || [user.provider],
+				migrationCompleted: user.migrationCompleted || false,
 			};
 
 			return res.status(200).json({
@@ -729,6 +959,11 @@ export const socialAuth = async (req, res) => {
 				token,
 				user: userResponse,
 				firstLogin: !user.onboardingCompleted,
+				migrationCompleted: user.migrationCompleted || false,
+				providers: {
+					primary: user.provider,
+					connected: user.connectedProviders || [user.provider],
+				},
 			});
 		}
 
