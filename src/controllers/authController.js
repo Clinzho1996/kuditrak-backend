@@ -560,7 +560,6 @@ export const socialAuth = async (req, res) => {
 			hasAppleId: !!appleUserId,
 		});
 
-		// IMPORTANT: Only query by appleUserId if it actually exists
 		let user = null;
 
 		// Strategy 1: Find by Firebase UID
@@ -569,7 +568,7 @@ export const socialAuth = async (req, res) => {
 			console.log(`✅ Found user by Firebase UID: ${user._id}`);
 		}
 
-		// Strategy 2: Find by Apple User ID (only if appleUserId is provided)
+		// Strategy 2: Find by Apple User ID
 		if (!user && appleUserId) {
 			user = await User.findOne({ appleUserId: appleUserId });
 			if (user) {
@@ -577,7 +576,7 @@ export const socialAuth = async (req, res) => {
 			}
 		}
 
-		// Strategy 3: Find by email (only for social providers)
+		// Strategy 3: Find by email (for social providers)
 		if (!user && userEmail) {
 			user = await User.findOne({
 				email: userEmail,
@@ -585,9 +584,43 @@ export const socialAuth = async (req, res) => {
 			});
 			if (user) {
 				console.log(`✅ Found existing social user by email: ${user._id}`);
+				
+				// CRITICAL: Update appleUserId if it's different (migration scenario)
+				if (appleUserId && user.appleUserId !== appleUserId) {
+					console.log(`🔄 Updating Apple ID from ${user.appleUserId} to ${appleUserId}`);
+					user.appleUserId = appleUserId;
+					await user.save();
+				}
+				
 				if (!user.firebaseUid && uid) {
 					user.firebaseUid = uid;
 					await user.save();
+				}
+			}
+		}
+
+		// Strategy 4: Find by email for local users (handle migration)
+		if (!user && userEmail) {
+			const localUser = await User.findOne({
+				email: userEmail,
+				provider: "local",
+			});
+			
+			if (localUser) {
+				console.log(`⚠️ Found local user by email, considering for migration`);
+				
+				// Check if this might be an Apple Sign-In migration
+				if (authProvider === "apple.com" || authProvider === "apple") {
+					// Migrate local user to Apple Sign-In
+					localUser.provider = "apple.com";
+					localUser.firebaseUid = uid;
+					if (appleUserId) {
+						localUser.appleUserId = appleUserId;
+					}
+					localUser.isVerified = true;
+					await localUser.save();
+					user = localUser;
+					console.log(`✅ Migrated local user to Apple Sign-In: ${user._id}`);
 				}
 			}
 		}
@@ -615,7 +648,6 @@ export const socialAuth = async (req, res) => {
 			}
 
 			try {
-				// Prepare user data - CRITICAL: Only include appleUserId if it exists
 				const userData = {
 					fullName: userName,
 					email: finalEmail,
@@ -625,24 +657,19 @@ export const socialAuth = async (req, res) => {
 					onboardingCompleted: false,
 				};
 
-				// Only add appleUserId if it's actually provided (not null/undefined)
 				if (appleUserId) {
 					userData.appleUserId = appleUserId;
 				}
 
 				user = await User.create(userData);
-
 				await initializeDefaultCategories(user._id);
 				await Wallet.create({ userId: user._id });
 
-				console.log(
-					`✅ New ${authProvider} user created: ${userName} (${finalEmail})`,
-				);
+				console.log(`✅ New ${authProvider} user created: ${userName} (${finalEmail})`);
 			} catch (createError) {
 				if (createError.code === 11000) {
 					console.error(`❌ Duplicate key error:`, createError.keyPattern);
 
-					// Try to find by Firebase UID one more time
 					const retryUser = await User.findOne({ firebaseUid: uid });
 					if (retryUser) {
 						user = retryUser;
@@ -650,8 +677,7 @@ export const socialAuth = async (req, res) => {
 					} else {
 						return res.status(409).json({
 							success: false,
-							message:
-								"Account already exists with different provider. Please sign in with your original method.",
+							message: "Account already exists with different provider. Please sign in with your original method.",
 							code: "ACCOUNT_EXISTS",
 							details: createError.keyPattern,
 						});
@@ -666,20 +692,16 @@ export const socialAuth = async (req, res) => {
 		if (user) {
 			let needsUpdate = false;
 
-			if (
-				(user.fullName === "User" || !user.fullName) &&
-				name &&
-				name !== "User"
-			) {
+			if ((user.fullName === "User" || !user.fullName) && name && name !== "User") {
 				user.fullName = name;
 				needsUpdate = true;
 			}
 
-			// Only update appleUserId if it's provided and user doesn't have one
-			if (appleUserId && !user.appleUserId) {
+			// Update appleUserId if provided and different
+			if (appleUserId && user.appleUserId !== appleUserId) {
 				user.appleUserId = appleUserId;
 				needsUpdate = true;
-				console.log(`🔗 Linking Apple ID: ${appleUserId}`);
+				console.log(`🔗 Updating Apple ID to: ${appleUserId}`);
 			}
 
 			if (!user.firebaseUid && uid) {
